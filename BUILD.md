@@ -32,6 +32,14 @@ hacbrewpack -k prod.keys --titleid 0100485952450000 --noromfs \
 
 The NSP uses `sdmc:/switch/horizon/resources.romfs` (625 MB, with sounds and 143 language files).
 
+## Current artifacts
+
+Build run `44518820144` (audio + launcher + auth + account UI):
+
+- `Horizon-full.nro` — 53,109,580 bytes, SHA-256 `65315b7c620f262255ff14dd9d69f65f0f96b7ed8788af2881c645fc142b0b81`.
+- `horizon.elf` — SHA-256 `bc9010f055f209fb621f8a8fe2c35eb8093b5d91f014f76666405a36cf9cfaf0`.
+- The NSP is packaged locally from the ELF and the console's `prod.keys`; it is not committed.
+
 ## Status
 
 - Audio and full builds pass in CI.
