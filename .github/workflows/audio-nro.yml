@@ -1,3 +1,4 @@
+successfully downloaded text file (SHA: 497f169adcc2caa19f51addd39db813e6ed7edee)
 name: switch-audio-nro
 
 on:
@@ -30,6 +31,7 @@ jobs:
           set -eux
           git clone --depth 1 --branch v0.1.1 https://github.com/MakrSas/horizon-switch.git makrsas
           git clone --depth 1 https://github.com/tarkodev/horizon-switch.git tarkodev
+          mkdir -p makrsas/switch/vendor
           cp -a tarkodev/switch/vendor/cpal makrsas/switch/vendor/cpal
 
       - name: Patch audio
