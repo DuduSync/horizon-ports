@@ -1,0 +1,1563 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 0937cdc..7f39141 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -11464,6 +11464,17 @@ impl ApplicationHandler for Game<'_> {
+                         Action::Play { folder } => {
+                             self.open_world(&folder, None, None, false, None)?
+                         }
++                        Action::Mods => {
++                            self.open_options_at(true, horizon_client::options_ui::Page::Mods)
++                        }
++                        Action::SetLanguage { code } => {
++                            self.settings.language = code.clone();
++                            self.settings.save(&Self::options_path());
++                            self.load_language(&code);
++                            if let Some(title) = &mut self.title {
++                                title.set_language(&code);
++                            }
++                        }
+                         Action::Create {
+                             folder,
+                             name,
+@@ -12845,10 +12856,13 @@ fn load_resources(
+     progress.set(4);
+     if !menu {
+         horizon_client::ui::load_metadata(&root);
+-        horizon_client::lang::set(horizon_client::lang::Language::load(
+-            &[&root],
+-            &settings.language,
+-        ));
++        let configured = if settings.file.get("lang").is_some() {
++            settings.language.as_str()
++        } else {
++            ""
++        };
++        let language = horizon_client::launcher::preferred_language(&root, configured);
++        horizon_client::lang::set(horizon_client::lang::Language::load(&[&root], &language));
+     }
+     let registry_owner = assets.clone();
+     let collision = collisions::load(&root, registry_owner.registry)?;
+@@ -13212,6 +13226,14 @@ fn start_game<'a>(
+         settings.render_distance = d;
+     }
+     let mut game = Game::new(res, pack, gui, options, settings, audio, prepared)?;
++    // The first boot may have picked a language without writing it (see
++    // `load_resources`): keep the choice when options.txt is next saved.
++    if game.settings.file.get("lang").is_none() {
++        let code = horizon_client::lang::code();
++        if !code.is_empty() {
++            game.settings.language = code;
++        }
++    }
+     game.rest_loader = rest_loader;
+     game.ui.vanilla_root = vanilla_root;
+     if let Some(error) = pack_error {
+diff --git a/crates/horizon-client/src/game/agent.rs b/crates/horizon-client/src/game/agent.rs
+index fa9dbf3..433115a 100644
+--- a/crates/horizon-client/src/game/agent.rs
++++ b/crates/horizon-client/src/game/agent.rs
+@@ -538,6 +538,8 @@ impl Game<'_> {
+         };
+         match &title.mode {
+             Mode::Main => json!({ "mode": "main", "worlds": worlds() }),
++            Mode::Settings => json!({ "mode": "launcher-settings" }),
++            Mode::Account => json!({ "mode": "account" }),
+             Mode::Select {
+                 worlds: list,
+                 selected,
+diff --git a/crates/horizon-client/src/game/options.rs b/crates/horizon-client/src/game/options.rs
+index 243eced..e6e989d 100644
+--- a/crates/horizon-client/src/game/options.rs
++++ b/crates/horizon-client/src/game/options.rs
+@@ -219,6 +219,9 @@ impl Game<'_> {
+                 }
+                 Event::Language(code) => {
+                     self.load_language(&code);
++                    if let Some(title) = &mut self.title {
++                        title.set_language(&code);
++                    }
+                 }
+                 Event::Packs(_) => {
+                     self.settings.save(&Self::options_path());
+diff --git a/crates/horizon-client/src/game/startup_menu.rs b/crates/horizon-client/src/game/startup_menu.rs
+index cf301ac..56dc379 100644
+--- a/crates/horizon-client/src/game/startup_menu.rs
++++ b/crates/horizon-client/src/game/startup_menu.rs
+@@ -65,10 +65,13 @@ impl StartupMenu {
+ 
+     pub(super) fn set_root(&mut self, root: PathBuf, settings: &Settings) {
+         horizon_client::ui::load_metadata(&root);
+-        horizon_client::lang::set(horizon_client::lang::Language::load(
+-            &[&root],
+-            &settings.language,
+-        ));
++        let configured = if settings.file.get("lang").is_some() {
++            settings.language.as_str()
++        } else {
++            ""
++        };
++        let language = horizon_client::launcher::preferred_language(&root, configured);
++        horizon_client::lang::set(horizon_client::lang::Language::load(&[&root], &language));
+         self.root = root;
+         if self.title.is_none() {
+             let mut title = Title::new(
+@@ -350,6 +353,9 @@ impl Loading {
+                         &[&self.menu.root],
+                         &code,
+                     ));
++                    if let Some(title) = &mut self.menu.title {
++                        title.set_language(&code);
++                    }
+                     self.save_menu_settings();
+                 }
+                 Event::Packs(_) => {
+@@ -422,6 +428,18 @@ impl Loading {
+             Action::Options => self.open_menu_options(Page::Main),
+             Action::Accessibility => self.open_menu_options(Page::Accessibility),
+             Action::Language => self.open_menu_options(Page::Language),
++            Action::Mods => self.open_menu_options(Page::Mods),
++            Action::SetLanguage { code } => {
++                self.settings.language = code.clone();
++                self.save_menu_settings();
++                horizon_client::lang::set(horizon_client::lang::Language::load(
++                    &[&self.menu.root],
++                    &code,
++                ));
++                if let Some(title) = &mut self.menu.title {
++                    title.set_language(&code);
++                }
++            }
+             action => {
+                 let name = self
+                     .options
+diff --git a/crates/horizon-client/src/launcher.rs b/crates/horizon-client/src/launcher.rs
+new file mode 100644
+index 0000000..d1b7863
+--- /dev/null
++++ b/crates/horizon-client/src/launcher.rs
+@@ -0,0 +1,237 @@
++//! The integrated launcher: the Switch dashboard's strings, its capability
++//! flags and the offline player name it edits.
++//!
++//! The dashboard itself is `title::Mode::Main`; it reuses the title screen's
++//! renderer and input rather than a second UI stack. Keeping the strings and
++//! paths here leaves `title.rs` about layout and lets the account screen
++//! (phase 2) and the mods page (phase 3) grow without touching it.
++use std::path::{Path, PathBuf};
++
++/// Whether this build links sound output (`--features audio`).
++pub const HAS_AUDIO: bool = cfg!(feature = "audio");
++/// Whether this build runs code mods (`--features mods`; wasmtime/cranelift).
++pub const HAS_MODS: bool = cfg!(feature = "mods");
++
++/// The one profile the MVP has. Profiles are a later phase: switching one
++/// takes a restart, so the dashboard only shows its name.
++pub const PROFILE: &str = "default";
++
++const PT_BR: &[(&str, &str)] = &[
++    ("play", "Jogar"),
++    ("worlds", "Mundos"),
++    ("account", "Conta"),
++    ("mods", "Mods"),
++    ("settings", "Ajustes"),
++    ("quit", "Sair"),
++    ("dashboard", "HORIZON"),
++    ("last_world", "Último mundo"),
++    ("no_world", "Nenhum mundo ainda"),
++    ("worlds_hint", "Escolher ou criar"),
++    ("account_offline", "Jogando offline"),
++    ("account_title", "Conta"),
++    ("account_soon", "Entrar com Microsoft — em breve"),
++    (
++        "account_note",
++        "A conta Microsoft entra na fase 2. Por enquanto o jogo usa o nome offline abaixo.",
++    ),
++    ("account_name", "Nome offline"),
++    ("settings_title", "Ajustes"),
++    ("language", "Idioma"),
++    ("language_pt", "Português (Brasil)"),
++    ("language_en", "English (US)"),
++    ("offline_name", "Nome offline"),
++    (
++        "offline_name_hint",
++        "Usado nos mundos e no LAN. Letras, números e _ ; até 16.",
++    ),
++    ("save", "Salvar"),
++    ("saved", "Nome salvo"),
++    (
++        "invalid",
++        "Nome inválido: use de 1 a 16 caracteres, sem espaços",
++    ),
++    ("more_options", "Mais ajustes do jogo"),
++    ("back", "Voltar"),
++    ("profile", "Perfil"),
++    ("profile_default", "Padrão"),
++    ("profile_note", "a troca vale no próximo boot"),
++    ("build", "Build"),
++    ("mods_builtin", "Runtime de mods incluído"),
++    ("mods_missing", "Runtime de mods fora deste build"),
++    ("audio_builtin", "Áudio incluído"),
++    ("audio_missing", "Áudio fora deste build"),
++    ("feature_both", "mods + áudio"),
++    ("feature_mods", "mods"),
++    ("feature_audio", "áudio"),
++    ("feature_none", "sem mods / sem áudio"),
++    ("mods_title", "Mods"),
++    (
++        "mods_note",
++        "A página completa de mods fica em Ajustes > Mods.",
++    ),
++    ("enter", "Abrir"),
++];
++
++const EN_US: &[(&str, &str)] = &[
++    ("play", "Play"),
++    ("worlds", "Worlds"),
++    ("account", "Account"),
++    ("mods", "Mods"),
++    ("settings", "Settings"),
++    ("quit", "Quit"),
++    ("dashboard", "HORIZON"),
++    ("last_world", "Last world"),
++    ("no_world", "No worlds yet"),
++    ("worlds_hint", "Choose or create"),
++    ("account_offline", "Playing offline"),
++    ("account_title", "Account"),
++    ("account_soon", "Sign in with Microsoft — coming soon"),
++    (
++        "account_note",
++        "Microsoft sign-in arrives in phase 2. For now the game uses the offline name below.",
++    ),
++    ("account_name", "Offline name"),
++    ("settings_title", "Settings"),
++    ("language", "Language"),
++    ("language_pt", "Português (Brasil)"),
++    ("language_en", "English (US)"),
++    ("offline_name", "Offline name"),
++    (
++        "offline_name_hint",
++        "Used in worlds and on LAN. Letters, digits and _ ; up to 16.",
++    ),
++    ("save", "Save"),
++    ("saved", "Name saved"),
++    (
++        "invalid",
++        "Invalid name: use 1 to 16 characters, without spaces",
++    ),
++    ("more_options", "More game settings"),
++    ("back", "Back"),
++    ("profile", "Profile"),
++    ("profile_default", "Default"),
++    ("profile_note", "switches on the next boot"),
++    ("build", "Build"),
++    ("mods_builtin", "Mod runtime included"),
++    ("mods_missing", "Mod runtime not in this build"),
++    ("audio_builtin", "Audio included"),
++    ("audio_missing", "Audio not in this build"),
++    ("feature_both", "mods + audio"),
++    ("feature_mods", "mods"),
++    ("feature_audio", "audio"),
++    ("feature_none", "no mods / no audio"),
++    ("mods_title", "Mods"),
++    ("mods_note", "The full mods page lives in Settings > Mods."),
++    ("enter", "Open"),
++];
++
++/// The launcher's own strings, in the language the game loaded.
++///
++/// The resource pack may lack some vanilla keys, but these are compiled in,
++/// so the dashboard is readable even before a pack is selected.
++pub fn tr(key: &'static str) -> &'static str {
++    let table = if is_pt_br() { PT_BR } else { EN_US };
++    table
++        .iter()
++        .find_map(|(k, v)| (*k == key).then_some(*v))
++        .unwrap_or(key)
++}
++
++/// Whether the current language is Brazilian Portuguese.
++pub fn is_pt_br() -> bool {
++    let code = crate::lang::code();
++    code.eq_ignore_ascii_case("pt_br") || code.eq_ignore_ascii_case("pt-br")
++}
++
++/// The language the launcher offers to switch to.
++pub fn other_language() -> &'static str {
++    if is_pt_br() { "en_us" } else { "pt_br" }
++}
++
++/// The language the game loads on first boot: the one `options.txt` keeps,
++/// or Brazilian Portuguese when it has none and the resources ship it, else
++/// English.
++pub fn preferred_language(root: &Path, configured: &str) -> String {
++    if !configured.is_empty() {
++        return configured.to_owned();
++    }
++    if root.join("assets/minecraft/lang/pt_br.json").is_file() {
++        "pt_br".to_owned()
++    } else {
++        crate::lang::DEFAULT.to_owned()
++    }
++}
++
++/// The offline player name file, next to `options.txt`.
++pub fn player_path(home: &Path) -> PathBuf {
++    home.join(crate::offline_name::FILE)
++}
++
++/// The name the game will join with, created on first use so the dashboard
++/// and the world agree on it.
++pub fn player_name(home: &Path) -> String {
++    crate::offline_name::load_or_create(home)
++}
++
++/// The name to show before the player starts a world: the one on disk, or a
++/// generated one that is only written when it is used.
++pub fn player_name_preview(home: &Path) -> String {
++    crate::offline_name::load(home).unwrap_or_else(|| crate::offline_name::generate(0))
++}
++
++/// Persist the name the game reads when it opens a world.
++pub fn save_player_name(home: &Path, name: &str) -> std::io::Result<()> {
++    crate::offline_name::save(home, name)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn every_key_has_both_translations() {
++        for (key, _) in PT_BR {
++            assert!(
++                EN_US.iter().any(|(k, _)| k == key),
++                "missing en_us for {key}"
++            );
++        }
++        for (key, _) in EN_US {
++            assert!(
++                PT_BR.iter().any(|(k, _)| k == key),
++                "missing pt_br for {key}"
++            );
++        }
++    }
++
++    #[test]
++    fn player_name_round_trips_through_the_file() {
++        let dir =
++            std::env::temp_dir().join(format!("horizon-launcher-name-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        save_player_name(&dir, "Dudu_2").unwrap();
++        assert_eq!(player_name(&dir), "Dudu_2");
++        assert_eq!(
++            std::fs::read_to_string(player_path(&dir)).unwrap(),
++            "name:Dudu_2\n"
++        );
++        assert!(save_player_name(&dir, "has space").is_err());
++        assert_eq!(player_name(&dir), "Dudu_2");
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn first_boot_prefers_pt_br_only_when_the_resources_ship_it() {
++        let dir =
++            std::env::temp_dir().join(format!("horizon-launcher-lang-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(dir.join("assets/minecraft/lang")).unwrap();
++        std::fs::write(dir.join("assets/minecraft/lang/pt_br.json"), "{}").unwrap();
++        assert_eq!(preferred_language(&dir, ""), "pt_br");
++        // An explicit setting always wins, even English over a pt-BR pack.
++        assert_eq!(preferred_language(&dir, "en_us"), "en_us");
++        let _ = std::fs::remove_dir_all(&dir);
++        assert_eq!(preferred_language(&dir, ""), crate::lang::DEFAULT);
++    }
++}
+diff --git a/crates/horizon-client/src/lib.rs b/crates/horizon-client/src/lib.rs
+index 6de9b7c..3de251c 100644
+--- a/crates/horizon-client/src/lib.rs
++++ b/crates/horizon-client/src/lib.rs
+@@ -109,6 +109,7 @@ pub mod keymapping;
+ pub mod lan;
+ pub mod landing;
+ pub mod lang;
++pub mod launcher;
+ pub mod level_loading;
+ pub mod light;
+ pub mod locator_bar;
+diff --git a/crates/horizon-client/src/offline_name.rs b/crates/horizon-client/src/offline_name.rs
+index 552f155..9debfce 100644
+--- a/crates/horizon-client/src/offline_name.rs
++++ b/crates/horizon-client/src/offline_name.rs
+@@ -40,6 +40,26 @@ pub fn load_or_create(dir: &Path) -> String {
+     name
+ }
+ 
++/// The name kept in `dir`, if the file exists and holds a valid one.
++pub fn load(dir: &Path) -> Option<String> {
++    fs::read_to_string(dir.join(FILE))
++        .ok()
++        .and_then(|text| parse(&text))
++}
++
++/// Keep `name` in `dir` for the next run. An invalid name is refused;
++/// the caller shows the reason instead of writing a name the game would
++/// silently replace.
++pub fn save(dir: &Path, name: &str) -> std::io::Result<()> {
++    if !is_valid(name) {
++        return Err(std::io::Error::new(
++            std::io::ErrorKind::InvalidInput,
++            "player names are 1 to 16 printable ASCII characters, without spaces",
++        ));
++    }
++    fs::write(dir.join(FILE), format!("{KEY}{name}\n"))
++}
++
+ fn parse(text: &str) -> Option<String> {
+     text.lines()
+         .find_map(|line| line.trim_end_matches('\r').strip_prefix(KEY))
+diff --git a/crates/horizon-client/src/title.rs b/crates/horizon-client/src/title.rs
+index a696781..8e27737 100644
+--- a/crates/horizon-client/src/title.rs
++++ b/crates/horizon-client/src/title.rs
+@@ -1,8 +1,8 @@
+-//! Title, world selection and world creation screens (TitleScreen,
+-//! SelectWorldScreen, CreateWorldScreen layouts), drawn as HUD quads.
++//! Title (the Switch launcher dashboard), world selection and world creation
++//! screens, drawn as HUD quads.
+ use crate::{
+     hud::{HudAtlas, HudBatch, rgba},
+-    lang,
++    lang, launcher,
+     save::Level,
+     text::{Text, format_translation},
+ };
+@@ -31,6 +31,69 @@ pub(crate) fn confirm_top(h: f32, lines: usize) -> f32 {
+     ((h.ceil() - 61.0 - lines as f32 * 9.0) / 2.0).floor()
+ }
+ 
++/// Where the launcher's dashboard cards sit, in GUI pixels. The panel grows
++/// with the screen up to 420 pixels so the cards stay readable on a TV and
++/// fit the 480x262 minimum the title screen is tested at.
++#[derive(Clone, Copy, Debug)]
++struct Dashboard {
++    panel: [f32; 4],
++    play: [f32; 4],
++    worlds: [f32; 4],
++    account: [f32; 4],
++    mods: [f32; 4],
++    settings: [f32; 4],
++    quit: [f32; 4],
++}
++fn dashboard(w: f32, h: f32) -> Dashboard {
++    let (w, h) = (w.ceil(), h.ceil());
++    let panel_w = (w * 0.56).clamp(300.0, 420.0).min((w - 16.0).max(280.0));
++    // Leave the bottom line for the version and the notice; never cover the
++    // logo and edition banner (they end at 81). On a very short window the
++    // cards get shorter instead of moving up over the logo.
++    let panel_h = (h - 84.0 - 14.0).clamp(144.0, 170.0);
++    let x = ((w - panel_w) / 2.0).floor();
++    let y = (h * 0.28)
++        .floor()
++        .clamp(84.0, (h - panel_h - 4.0).max(84.0));
++    let left = x + 10.0;
++    let inner = panel_w - 20.0;
++    let gap = 8.0;
++    let big = (inner * 0.63).floor();
++    let row1_y = y + 24.0;
++    let row1_h = if panel_h >= 168.0 {
++        44.0
++    } else if panel_h >= 150.0 {
++        38.0
++    } else {
++        34.0
++    };
++    let row2_y = row1_y + row1_h + gap;
++    let row2_h = if panel_h >= 168.0 {
++        32.0
++    } else if panel_h >= 150.0 {
++        28.0
++    } else {
++        24.0
++    };
++    let row2_w = ((inner - gap) / 2.0).floor();
++    let row3_y = row2_y + row2_h + 6.0;
++    let row3_h = row2_h;
++    Dashboard {
++        panel: [x, y, panel_w, panel_h],
++        play: [left, row1_y, big, row1_h],
++        worlds: [left + big + gap, row1_y, inner - big - gap, row1_h],
++        account: [left, row2_y, row2_w, row2_h],
++        mods: [left + row2_w + gap, row2_y, inner - row2_w - gap, row2_h],
++        settings: [left, row3_y, big, row3_h],
++        quit: [left + big + gap, row3_y, inner - big - gap, row3_h],
++    }
++}
++
++/// The settings screen's one text field (offline name).
++fn name_field_rect(w: f32) -> [f32; 4] {
++    [(w.ceil() / 2.0).floor() - 100.0, 86.0, 200.0, 20.0]
++}
++
+ fn translate(key: &str, fallback: &str, args: &[&dyn std::fmt::Display]) -> String {
+     let args: Vec<Text> = args
+         .iter()
+@@ -74,6 +137,11 @@ pub struct WorldEntry {
+ #[derive(Clone, Debug)]
+ pub enum Mode {
+     Main,
++    /// The launcher's settings: language and the offline player name.
++    Settings,
++    /// Phase 2's Microsoft account screen. It shows the offline name and
++    /// leaves `auth::set_current` to the account work.
++    Account,
+     Select {
+         worlds: Vec<WorldEntry>,
+         selected: Option<usize>,
+@@ -109,6 +177,12 @@ pub enum Action {
+     Options,
+     Accessibility,
+     Language,
++    /// Open Options > Mods (`open_options_at(true, Page::Mods)`).
++    Mods,
++    /// Switch the game language from the launcher's settings screen.
++    SetLanguage {
++        code: String,
++    },
+     Play {
+         folder: String,
+     },
+@@ -128,6 +202,8 @@ pub struct Title {
+     /// Direct Connection's address, synchronized with `options.txt`'s `lastServer`.
+     pub last_server: String,
+     pub saves: PathBuf,
++    /// Where `options.txt` and `horizon-player.txt` live (the game home).
++    home: PathBuf,
+     pub started: std::time::Instant,
+     search: String,
+     search_focused: bool,
+@@ -144,15 +220,32 @@ pub struct Title {
+     splash: Option<String>,
+     /// The saves listed for Home, re-read every couple of seconds.
+     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
++    /// The launcher's language (`options.txt`'s `lang`), and what the
++    /// resources declare, for the settings screen.
++    language: String,
++    languages: Vec<lang::LanguageInfo>,
++    /// The offline name (kept in `horizon-player.txt`) and its edit box.
++    player_name: String,
++    name_focused: bool,
++    name_status: Option<NameStatus>,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum NameStatus {
++    Saved,
++    Invalid,
+ }
+ pub(crate) struct Button {
+     x: f32,
+     y: f32,
+     w: f32,
++    h: f32,
+     label: String,
+     enabled: bool,
+     id: u8,
+     icon: Option<(&'static str, f32)>,
++    /// Launcher cards draw their label on the left with a subtitle.
++    card: bool,
++    subtitle: Option<String>,
+ }
+ /// Java String.hashCode for text seeds (WorldOptions.parseSeed).
+ pub fn parse_seed(text: &str) -> Option<i64> {
+@@ -227,10 +320,24 @@ impl Title {
+         let today = chrono::Local::now();
+         let mode = Mode::Main;
+         let now = std::time::Instant::now();
++        let home = saves
++            .parent()
++            .filter(|p| !p.as_os_str().is_empty())
++            .unwrap_or_else(|| Path::new("."))
++            .to_path_buf();
++        let root = resources.to_path_buf();
++        let code = lang::code();
++        let language = if code.is_empty() {
++            "en_us".to_owned()
++        } else {
++            code
++        };
++        let player_name = launcher::player_name_preview(&home);
+         Self {
+             mode,
+             last_server: String::new(),
+             saves,
++            home,
+             started: now,
+             search: String::new(),
+             search_focused: false,
+@@ -252,6 +359,59 @@ impl Title {
+                 (today.month(), today.day()),
+             ),
+             recent: std::cell::RefCell::new(None),
++            language,
++            languages: lang::available(&[&root]),
++            player_name,
++            name_focused: false,
++            name_status: None,
++        }
++    }
++    /// The language the game loaded, for the selected row and the toggle.
++    pub fn set_language(&mut self, code: &str) {
++        if !code.is_empty() {
++            self.language = code.to_owned();
++        }
++    }
++    /// Whether the resources declare `code` (the language page only offers
++    /// the ones they do; the launcher toggle hides itself otherwise).
++    pub fn has_language(&self, code: &str) -> bool {
++        self.languages.iter().any(|l| l.code == code)
++    }
++    pub fn open_settings(&mut self) {
++        self.mode = Mode::Settings;
++        self.name_focused = false;
++        self.name_status = None;
++        self.player_name = launcher::player_name_preview(&self.home);
++    }
++    pub fn open_account(&mut self) {
++        self.mode = Mode::Account;
++        self.player_name = launcher::player_name_preview(&self.home);
++    }
++    /// Keep the edited offline name in `horizon-player.txt`; the next world
++    /// (or LAN host) reads it through `Options::player_name`.
++    fn save_player_name(&mut self) {
++        self.player_name = self.player_name.trim().to_owned();
++        self.name_status = Some(
++            match launcher::save_player_name(&self.home, &self.player_name) {
++                Ok(()) => NameStatus::Saved,
++                Err(_) => NameStatus::Invalid,
++            },
++        );
++    }
++    /// The launcher's Play card: the newest world, or the world list when
++    /// there is none. `Action::Play` already opens it in this process.
++    pub fn play_action(&mut self) -> Action {
++        let folder = self.recent_worlds().first().map(|w| w.folder.clone());
++        match folder {
++            Some(folder) => {
++                // A name generated on this screen is the one the world gets.
++                self.player_name = launcher::player_name(&self.home);
++                Action::Play { folder }
++            }
++            None => {
++                self.enter_singleplayer();
++                Action::None
++            }
+         }
+     }
+     /// Vanilla bypasses the selector when there are no saves.
+@@ -508,6 +668,67 @@ impl Title {
+         }
+         *self.recent.borrow_mut() = None;
+     }
++
++    /// The dark dashboard panel behind the cards: header at the top, the
++    /// profile and the build in its footer.
++    fn draw_dashboard(&self, atlas: &HudAtlas, batch: &mut HudBatch) {
++        let (w, h) = (batch.width.ceil(), batch.height.ceil());
++        let d = dashboard(w, h);
++        let [x, y, pw, ph] = d.panel;
++        batch.fill(atlas, x, y, pw, ph, rgba(6, 10, 12, 210));
++        let frame = rgba(80, 200, 140, 220);
++        batch.fill(atlas, x, y, pw, 1.0, frame);
++        batch.fill(atlas, x, y + ph - 1.0, pw, 1.0, frame);
++        batch.fill(atlas, x, y, 1.0, ph, frame);
++        batch.fill(atlas, x + pw - 1.0, y, 1.0, ph, frame);
++        batch.text(
++            atlas,
++            launcher::tr("dashboard"),
++            x + 12.0,
++            y + 7.0,
++            rgba(120, 230, 170, 255),
++            true,
++        );
++        let build = format!("Horizon {}", horizon_core::VANILLA_VERSION);
++        let width = HudBatch::text_width(atlas, &build);
++        batch.text(
++            atlas,
++            &build,
++            x + pw - width - 12.0,
++            y + 7.0,
++            rgba(120, 230, 170, 255),
++            true,
++        );
++        let profile = format!(
++            "{}: {}",
++            launcher::tr("profile"),
++            launcher::tr("profile_default")
++        );
++        batch.text(
++            atlas,
++            &profile,
++            x + 12.0,
++            y + ph - 15.0,
++            rgba(150, 150, 150, 255),
++            true,
++        );
++        let flags = match (launcher::HAS_MODS, launcher::HAS_AUDIO) {
++            (true, true) => launcher::tr("feature_both"),
++            (true, false) => launcher::tr("feature_mods"),
++            (false, true) => launcher::tr("feature_audio"),
++            (false, false) => launcher::tr("feature_none"),
++        };
++        let width = HudBatch::text_width(atlas, flags);
++        batch.text(
++            atlas,
++            flags,
++            x + pw - width - 12.0,
++            y + ph - 15.0,
++            rgba(150, 150, 150, 255),
++            true,
++        );
++    }
++
+     pub fn recent_worlds(&self) -> Vec<WorldEntry> {
+         let mut recent = self.recent.borrow_mut();
+         match &*recent {
+@@ -571,84 +792,127 @@ impl Title {
+             x,
+             y,
+             w,
++            h: 20.0,
+             label: label.into(),
+             enabled,
+             id,
+             icon: None,
++            card: false,
++            subtitle: None,
++        };
++        let card = |r: [f32; 4], label: &str, subtitle: Option<String>, enabled: bool, id: u8| {
++            let mut button = b(r[0], r[1], r[2], label, enabled, id);
++            button.h = r[3];
++            button.card = true;
++            button.subtitle = subtitle;
++            button
+         };
+         match &self.mode {
+             Mode::Main => {
+-                let cx = (w / 2.0).floor();
+-                let y = (h / 4.0).floor() + 48.0;
+-                let mut buttons = vec![
+-                    b(
+-                        cx - 100.0,
+-                        y,
+-                        200.0,
+-                        &lang::get_or("menu.singleplayer", "Singleplayer"),
++                let d = dashboard(w, h);
++                let recent = self.recent_worlds();
++                let last = recent.first().map_or_else(
++                    || launcher::tr("no_world").to_owned(),
++                    |world| format!("{}: {}", launcher::tr("last_world"), world.name),
++                );
++                let language = if self.language.starts_with("pt_br") {
++                    launcher::tr("language_pt")
++                } else {
++                    launcher::tr("language_en")
++                };
++                vec![
++                    card(d.play, launcher::tr("play"), Some(last), true, 1),
++                    card(
++                        d.worlds,
++                        launcher::tr("worlds"),
++                        Some(launcher::tr("worlds_hint").to_owned()),
+                         true,
+-                        1,
++                        8,
+                     ),
+-                    b(
+-                        cx - 100.0,
+-                        y + 24.0,
+-                        200.0,
+-                        &lang::get_or("menu.multiplayer", "Multiplayer"),
++                    card(
++                        d.account,
++                        launcher::tr("account"),
++                        Some(format!(
++                            "{} · {}",
++                            self.player_name,
++                            launcher::tr("account_offline")
++                        )),
++                        true,
++                        9,
++                    ),
++                    card(
++                        d.mods,
++                        launcher::tr("mods"),
++                        Some(
++                            launcher::tr(if launcher::HAS_MODS {
++                                "mods_builtin"
++                            } else {
++                                "mods_missing"
++                            })
++                            .to_owned(),
++                        ),
++                        true,
++                        10,
++                    ),
++                    card(
++                        d.settings,
++                        launcher::tr("settings"),
++                        Some(format!("{}: {language}", launcher::tr("language"))),
+                         true,
+-                        4,
++                        3,
+                     ),
++                    card(d.quit, launcher::tr("quit"), None, true, 2),
++                ]
++            }
++            Mode::Settings => {
++                let cx = (w / 2.0).floor();
++                let language = if self.language.starts_with("pt_br") {
++                    launcher::tr("language_pt")
++                } else {
++                    launcher::tr("language_en")
++                };
++                vec![
+                     b(
+                         cx - 100.0,
+-                        y + 48.0,
++                        46.0,
+                         200.0,
+-                        &lang::get_or("menu.online", "Minecraft Realms"),
+-                        false,
+-                        0,
++                        &format!("{}: {language}", launcher::tr("language")),
++                        true,
++                        42,
+                     ),
+                     b(
+                         cx - 100.0,
+-                        y + 96.0,
++                        126.0,
+                         98.0,
+-                        &lang::get_or("menu.options", "Options..."),
+-                        true,
+-                        3,
++                        launcher::tr("save"),
++                        !self.player_name.trim().is_empty(),
++                        44,
+                     ),
+                     b(
+                         cx + 2.0,
+-                        y + 96.0,
++                        126.0,
+                         98.0,
+-                        &lang::get_or("menu.quit", "Quit Game"),
++                        launcher::tr("more_options"),
+                         true,
+-                        2,
++                        45,
+                     ),
+-                ];
+-                // CommonButtons' icon buttons; Horizon's Join a Friend (an
+-                // invite code) sits behind vanilla's Friends button.
+-                for (i, (key, plain, id, icon)) in [
+-                    ("gui.friends.open", "Friends", 5, "friends/friends"),
+-                    ("options.language", "Language...", 6, "icon/language"),
+-                    (
+-                        "options.accessibility",
+-                        "Accessibility Settings...",
+-                        7,
+-                        "icon/accessibility",
++                    b(cx - 100.0, 160.0, 200.0, launcher::tr("back"), true, 41),
++                ]
++            }
++            Mode::Account => {
++                let cx = (w / 2.0).floor();
++                vec![
++                    b(
++                        cx - 100.0,
++                        128.0,
++                        200.0,
++                        launcher::tr("account_soon"),
++                        false,
++                        0,
+                     ),
++                    b(cx - 100.0, 154.0, 98.0, launcher::tr("settings"), true, 40),
++                    b(cx + 2.0, 154.0, 98.0, launcher::tr("back"), true, 41),
+                 ]
+-                .into_iter()
+-                .enumerate()
+-                {
+-                    let mut button = b(
+-                        cx - 34.0 + i as f32 * 24.0,
+-                        y + 72.0,
+-                        20.0,
+-                        &lang::get_or(key, plain),
+-                        true,
+-                        id,
+-                    );
+-                    button.icon = Some((icon, 15.0));
+-                    buttons.push(button);
+-                }
+-                buttons
+             }
+             Mode::Select { selected, .. } => vec![
+                 b(
+@@ -864,6 +1128,78 @@ impl Title {
+                 let notice = "Not affiliated with Mojang or Microsoft";
+                 let tw = HudBatch::text_width(atlas, notice);
+                 batch.text(atlas, notice, w - tw - 2.0, h - 10.0, u32::MAX, true);
++                self.draw_dashboard(atlas, batch);
++            }
++            Mode::Settings => {
++                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
++                centered(atlas, batch, launcher::tr("settings_title"), 15.0, u32::MAX);
++                let cx = (w / 2.0).floor();
++                batch.text(
++                    atlas,
++                    launcher::tr("offline_name"),
++                    cx - 100.0,
++                    72.0,
++                    rgba(160, 160, 160, 255),
++                    true,
++                );
++                self.caret.borrow_mut().draw(
++                    batch,
++                    atlas,
++                    (PLAYER_NAME, &self.player_name, 16),
++                    name_field_rect(w),
++                    self.name_focused,
++                    self.started,
++                );
++                let hint = launcher::tr("offline_name_hint");
++                batch.text(
++                    atlas,
++                    &truncated(atlas, hint, w - 40.0),
++                    cx - (HudBatch::text_width(atlas, hint).min(w - 40.0) / 2.0).floor(),
++                    112.0,
++                    rgba(140, 140, 140, 255),
++                    true,
++                );
++                if let Some(status) = self.name_status {
++                    let (message, color) = match status {
++                        NameStatus::Saved => (launcher::tr("saved"), rgba(90, 210, 120, 255)),
++                        NameStatus::Invalid => (launcher::tr("invalid"), rgba(255, 100, 100, 255)),
++                    };
++                    let width = HudBatch::text_width(atlas, message);
++                    batch.text(
++                        atlas,
++                        message,
++                        cx - (width.ceil() / 2.0).floor(),
++                        150.0,
++                        color,
++                        true,
++                    );
++                }
++            }
++            Mode::Account => {
++                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
++                centered(atlas, batch, launcher::tr("account_title"), 18.0, u32::MAX);
++                centered(
++                    atlas,
++                    batch,
++                    &format!(
++                        "{}: {} · {}",
++                        launcher::tr("account_name"),
++                        self.player_name,
++                        launcher::tr("account_offline")
++                    ),
++                    48.0,
++                    u32::MAX,
++                );
++                let note = launcher::tr("account_note");
++                for (i, line) in wrapped(atlas, note, w - 60.0).iter().enumerate() {
++                    centered(
++                        atlas,
++                        batch,
++                        line,
++                        68.0 + i as f32 * 10.0,
++                        rgba(160, 160, 160, 255),
++                    );
++                }
+             }
+             Mode::Select { worlds, selected } => {
+                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+@@ -1118,12 +1454,16 @@ impl Title {
+             ),
+         }
+         for b in self.buttons(w, h) {
+-            crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
++            if b.card {
++                draw_card(atlas, batch, cursor, &b);
++                continue;
++            }
++            crate::widgets::record(&b.label, [b.x, b.y, b.w, b.h], b.enabled);
+             let hover = b.enabled
+                 && cursor.0 >= b.x
+                 && cursor.0 < b.x + b.w
+                 && cursor.1 >= b.y
+-                && cursor.1 < b.y + 20.0;
++                && cursor.1 < b.y + b.h;
+             let sprite = if !b.enabled {
+                 "gui/sprites/widget/button_disabled"
+             } else if hover {
+@@ -1215,7 +1555,7 @@ impl Title {
+         let hit = self
+             .buttons(w, h)
+             .into_iter()
+-            .find(|b| b.enabled && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + 20.0)
++            .find(|b| b.enabled && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h)
+             .map(|b| b.id);
+         let action = self.click_action(x, y, (w, h), hit);
+         // World list selection is silent; launching its selected entry sounds.
+@@ -1224,13 +1564,51 @@ impl Title {
+     }
+     fn click_action(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) -> Action {
+         match (&mut self.mode, hit) {
+-            (Mode::Main, Some(1)) => {
++            (Mode::Main, Some(1)) => self.play_action(),
++            (Mode::Main, Some(2)) => Action::Quit,
++            (Mode::Main, Some(3)) => {
++                self.open_settings();
++                Action::None
++            }
++            (Mode::Main, Some(8)) => {
+                 self.enter_singleplayer();
+                 Action::None
+             }
+-            (Mode::Main, Some(2)) => Action::Quit,
+-            (Mode::Main, Some(4)) => {
+-                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::list(&self.saves));
++            (Mode::Main, Some(9)) => {
++                self.open_account();
++                Action::None
++            }
++            (Mode::Main, Some(10)) => Action::Mods,
++            (Mode::Settings, Some(42)) => {
++                let code = if self.language.starts_with("pt_br") {
++                    "en_us"
++                } else {
++                    "pt_br"
++                };
++                Action::SetLanguage {
++                    code: code.to_owned(),
++                }
++            }
++            (Mode::Settings, Some(44)) => {
++                self.save_player_name();
++                Action::None
++            }
++            (Mode::Settings, Some(45)) => Action::Options,
++            (Mode::Settings, Some(41)) => {
++                self.mode = Mode::Main;
++                Action::None
++            }
++            (Mode::Settings, None) => {
++                let [fx, fy, fw, fh] = name_field_rect(w);
++                self.name_focused = x >= fx && x < fx + fw && y >= fy && y < fy + fh;
++                Action::None
++            }
++            (Mode::Account, Some(40)) => {
++                self.open_settings();
++                Action::None
++            }
++            (Mode::Account, Some(41)) => {
++                self.mode = Mode::Main;
+                 Action::None
+             }
+             (Mode::Multiplayer(_), hit) => match self.multiplayer_click(hit, x, y, (w, h)) {
+@@ -1241,13 +1619,6 @@ impl Title {
+                 crate::multiplayer::Outcome::Connect(address) => Action::Connect { address },
+                 crate::multiplayer::Outcome::None => Action::None,
+             },
+-            (Mode::Main, Some(5)) => {
+-                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend());
+-                Action::None
+-            }
+-            (Mode::Main, Some(3)) => Action::Options,
+-            (Mode::Main, Some(7)) => Action::Accessibility,
+-            (Mode::Main, Some(6)) => Action::Language,
+             (Mode::Select { worlds, selected }, Some(10)) => {
+                 match selected.and_then(|i| worlds.get(i)) {
+                     Some(world) => Action::Play {
+@@ -1405,19 +1776,36 @@ impl Title {
+     pub fn focused_field(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
+         match &mut self.mode {
+             Mode::Multiplayer(screen) => screen.focused_text(),
+-            mode => caret_field(mode, self.search_focused, &mut self.search),
++            mode => caret_field(
++                mode,
++                self.search_focused,
++                &mut self.search,
++                &mut self.player_name,
++                self.name_focused,
++            ),
+         }
+     }
+     /// Whether the focused field edits at its cursor (every field but the
+     /// server screens', which still append).
+     pub fn has_caret_field(&mut self) -> bool {
+-        caret_field(&mut self.mode, self.search_focused, &mut self.search).is_some()
++        caret_field(
++            &mut self.mode,
++            self.search_focused,
++            &mut self.search,
++            &mut self.player_name,
++            self.name_focused,
++        )
++        .is_some()
+     }
+     /// Edit the focused field through its `EditBox`; false when there is none.
+     fn edit_field(&mut self, f: impl FnOnce(&mut crate::ui::EditBox)) -> bool {
+-        let Some((id, value, max)) =
+-            caret_field(&mut self.mode, self.search_focused, &mut self.search)
+-        else {
++        let Some((id, value, max)) = caret_field(
++            &mut self.mode,
++            self.search_focused,
++            &mut self.search,
++            &mut self.player_name,
++            self.name_focused,
++        ) else {
+             return false;
+         };
+         let before = value.clone();
+@@ -1460,6 +1848,7 @@ impl Title {
+     fn focused_rect(&self, (w, h): (f32, f32)) -> Option<[f32; 4]> {
+         let x = (w / 2.0).floor() - 100.0;
+         match &self.mode {
++            Mode::Settings if self.name_focused => Some(name_field_rect(w)),
+             Mode::Select { .. } if self.search_focused => Some([x, 21.0, 200.0, 20.0]),
+             Mode::Edit { focused: true, .. } => Some([x, edit_top(h) + 39.0, 200.0, 20.0]),
+             Mode::Create { focus, options, .. } => create_world::field_rect(w, h, options.tab)
+@@ -1484,13 +1873,25 @@ impl Title {
+         if !crate::ui::hovered((x, y), fx, fy, fw, fh) {
+             return;
+         }
+-        if let Some(field) = caret_field(&mut self.mode, self.search_focused, &mut self.search) {
++        if let Some(field) = caret_field(
++            &mut self.mode,
++            self.search_focused,
++            &mut self.search,
++            &mut self.player_name,
++            self.name_focused,
++        ) {
+             self.caret.get_mut().press(atlas, field, rect, x, shift);
+         }
+     }
+     /// The pointer moved with the button held (`EditBox.onDrag`).
+     pub fn drag_field(&mut self, atlas: &HudAtlas, x: f32) {
+-        if let Some(field) = caret_field(&mut self.mode, self.search_focused, &mut self.search) {
++        if let Some(field) = caret_field(
++            &mut self.mode,
++            self.search_focused,
++            &mut self.search,
++            &mut self.player_name,
++            self.name_focused,
++        ) {
+             self.caret.get_mut().drag(atlas, field, x);
+         }
+     }
+@@ -1508,6 +1909,12 @@ impl Title {
+         }
+     }
+     pub fn confirm_edit(&mut self) {
++        if matches!(self.mode, Mode::Settings) {
++            if self.name_focused {
++                self.save_player_name();
++            }
++            return;
++        }
+         let Mode::Edit {
+             world,
+             name,
+@@ -1526,6 +1933,9 @@ impl Title {
+         }
+     }
+     pub fn tab(&mut self) {
++        if matches!(self.mode, Mode::Settings) {
++            self.name_focused = !self.name_focused;
++        }
+         if let Mode::Edit { focused, .. } = &mut self.mode {
+             *focused = !*focused;
+         }
+@@ -1605,6 +2015,72 @@ fn centered(atlas: &HudAtlas, batch: &mut HudBatch, text: &str, y: f32, color: u
+         true,
+     );
+ }
++/// A launcher card: a nine-slice button with a left-aligned label and, when
++/// there is room, a dim second line. It registers the same widget and focus
++/// target a vanilla button does, so the existing pad/mouse/touch paths work.
++fn draw_card(atlas: &HudAtlas, batch: &mut HudBatch, cursor: (f32, f32), b: &Button) {
++    crate::widgets::record(&b.label, [b.x, b.y, b.w, b.h], b.enabled);
++    let hover = b.enabled
++        && cursor.0 >= b.x
++        && cursor.0 < b.x + b.w
++        && cursor.1 >= b.y
++        && cursor.1 < b.y + b.h;
++    crate::widgets::widget_cursor(hover, b.enabled);
++    crate::widgets::target([b.x, b.y, b.w, b.h]);
++    let sprite = if !b.enabled {
++        "gui/sprites/widget/button_disabled"
++    } else if b.id == 1 || hover {
++        "gui/sprites/widget/button_highlighted"
++    } else {
++        "gui/sprites/widget/button"
++    };
++    crate::ui::nine_slice(batch, atlas, sprite, b.x, b.y, b.w, b.h, u32::MAX);
++    let color = if b.enabled {
++        rgba(255, 255, 255, 255)
++    } else {
++        rgba(160, 160, 160, 255)
++    };
++    let tall = b.h >= 40.0;
++    batch.text(
++        atlas,
++        &b.label,
++        b.x + 10.0,
++        b.y + if tall { 9.0 } else { 5.0 },
++        color,
++        true,
++    );
++    if let Some(subtitle) = &b.subtitle
++        && !subtitle.is_empty()
++    {
++        let subtitle = truncated(atlas, subtitle, b.w - 20.0);
++        batch.text(
++            atlas,
++            &subtitle,
++            b.x + 10.0,
++            b.y + if tall { 24.0 } else { 17.0 },
++            rgba(175, 175, 175, 255),
++            true,
++        );
++    }
++}
++/// `text` cut to `width` with an ellipsis (card subtitles are one line).
++fn truncated(atlas: &HudAtlas, text: &str, width: f32) -> String {
++    if HudBatch::text_width(atlas, text) <= width {
++        return text.to_owned();
++    }
++    let mut out = String::new();
++    for ch in text.chars() {
++        let mut candidate = out.clone();
++        candidate.push(ch);
++        candidate.push('…');
++        if HudBatch::text_width(atlas, &candidate) > width {
++            break;
++        }
++        out.push(ch);
++    }
++    out.push('…');
++    out
++}
+ fn wrapped(atlas: &HudAtlas, text: &str, width: f32) -> Vec<String> {
+     atlas
+         .font
+@@ -1615,16 +2091,21 @@ fn wrapped(atlas: &HudAtlas, text: &str, width: f32) -> Vec<String> {
+ }
+ const SEARCH: crate::clipboard::FieldId = ("world.search", 0);
+ const EDIT_NAME: crate::clipboard::FieldId = ("world.edit-name", 0);
++const PLAYER_NAME: crate::clipboard::FieldId = ("launcher.player-name", 0);
+ const WORLD_NAME: crate::clipboard::FieldId = ("world.name", 0);
+ const WORLD_SEED: crate::clipboard::FieldId = ("world.seed", 0);
+-/// The focused field of the world screens: the list's search, the world
+-/// name being edited, or Create New World's name or seed.
++/// The focused field of the world screens and the launcher's settings: the
++/// list's search, the world name being edited, Create New World's name or
++/// seed, or the offline player name.
+ fn caret_field<'a>(
+     mode: &'a mut Mode,
+     search_focused: bool,
+     search: &'a mut String,
++    player_name: &'a mut String,
++    name_focused: bool,
+ ) -> Option<(crate::clipboard::FieldId, &'a mut String, usize)> {
+     match mode {
++        Mode::Settings if name_focused => Some((PLAYER_NAME, player_name, 16)),
+         Mode::Select { .. } if search_focused => Some((SEARCH, search, 50)),
+         Mode::Edit {
+             name,
+@@ -1647,54 +2128,44 @@ mod classic_tests {
+     use super::*;
+ 
+     #[test]
+-    fn classic_main_menu_icons_route_language_and_accessibility() {
++    fn launcher_dashboard_has_six_non_overlapping_cards() {
+         let mut title = Title::new(
+             PathBuf::new(),
+             Path::new("/nonexistent/horizon-test-resources"),
+         );
+         for (w, h) in [(960.0, 523.0), (480.0, 320.0), (427.0, 240.0)] {
+             let buttons = title.buttons(w, h);
+-            let cx = (w / 2.0).floor();
+-            let y = (h / 4.0).floor() + 48.0;
+-            for (id, x, enabled, icon) in [
+-                (5, cx - 34.0, true, "friends/friends"),
+-                (6, cx - 10.0, true, "icon/language"),
+-                (7, cx + 14.0, true, "icon/accessibility"),
+-            ] {
+-                let b = buttons.iter().find(|b| b.id == id).unwrap();
+-                assert_eq!(
+-                    (b.x, b.y, b.w, b.enabled, b.icon),
+-                    (x, y + 72.0, 20.0, enabled, Some((icon, 15.0)))
+-                );
+-                assert_eq!(
+-                    title.click(x + 10.0, y + 82.0, (w, h)),
+-                    match id {
+-                        6 => (Action::Language, true),
+-                        7 => (Action::Accessibility, true),
+-                        _ => (Action::None, true),
+-                    }
+-                );
+-                if id == 5 {
+-                    assert!(matches!(
+-                        title.mode,
+-                        Mode::Multiplayer(crate::multiplayer::Screen::Friend { .. })
+-                    ));
+-                    title.mode = Mode::Main;
+-                }
+-            }
+-            for id in [2, 3] {
+-                assert_eq!(buttons.iter().find(|b| b.id == id).unwrap().y, y + 96.0);
+-            }
+-            // The four-pixel gaps around icons must not activate a button.
+-            assert_eq!(
+-                title.click(cx + 12.0, y + 82.0, (w, h)),
+-                (Action::None, false)
+-            );
++            let ids: Vec<u8> = buttons.iter().map(|b| b.id).collect();
+             assert_eq!(
+-                title.click(cx + 24.0, y + 92.0, (w, h)),
+-                (Action::None, false)
++                ids,
++                [1, 8, 9, 10, 3, 2],
++                "Play, Worlds, Account, Mods, Settings, Quit"
+             );
++            for b in &buttons {
++                assert!(b.card);
++                assert!(b.x >= 0.0 && b.x + b.w <= w.ceil() + 0.5);
++                assert!(b.y >= 0.0 && b.y + b.h <= h.ceil() + 0.5);
++            }
++            for (i, a) in buttons.iter().enumerate() {
++                for b in &buttons[i + 1..] {
++                    let overlap =
++                        a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
++                    assert!(!overlap, "{:?} overlaps {:?}", a.label, b.label);
++                }
++            }
+         }
++        // With no worlds, Play opens the existing world selector (creation
++        // when there are no saves), not a second play path.
++        let play = title
++            .buttons(480.0, 262.0)
++            .into_iter()
++            .find(|b| b.id == 1)
++            .unwrap();
++        assert_eq!(
++            title.click(play.x + 5.0, play.y + 5.0, (480.0, 262.0)),
++            (Action::None, true)
++        );
++        assert!(matches!(title.mode, Mode::Create { .. }));
+     }
+ 
+     #[test]
+@@ -1747,20 +2218,6 @@ mod classic_tests {
+             "gui/title/edition".into(),
+             crate::hud::Rect { w: 128, h: 16, ..r },
+         );
+-        for (i, icon) in ["friends/friends", "icon/language", "icon/accessibility"]
+-            .into_iter()
+-            .enumerate()
+-        {
+-            atlas.sprites.insert(
+-                format!("gui/sprites/{icon}"),
+-                crate::hud::Rect {
+-                    u0: 0.25 + i as f32 * 0.125,
+-                    w: 15,
+-                    h: 15,
+-                    ..r
+-                },
+-            );
+-        }
+         let mut title = Title::new(PathBuf::new(), root);
+         title.splash = Some("Visible splash!".into());
+         let mut batch = HudBatch::new([1920, 1080]);
+@@ -1772,20 +2229,6 @@ mod classic_tests {
+         assert_eq!(batch.vertices[6].pos, [cx - 64.0, 67.0]);
+         assert_eq!(batch.vertices[8].pos, [cx + 64.0, 81.0]);
+         assert_eq!(batch.vertices[8].uv, [1.0, 14.0 / 16.0]);
+-        for i in 0..3 {
+-            let quad = batch
+-                .vertices
+-                .as_chunks::<6>()
+-                .0
+-                .iter()
+-                .find(|quad| quad[0].uv == [0.25 + i as f32 * 0.125, 0.0])
+-                .unwrap();
+-            let x = cx - 34.0 + i as f32 * 24.0 + 3.0;
+-            let y = (batch.height / 4.0).floor() + 48.0 + 72.0 + 3.0;
+-            assert_eq!(quad[0].pos, [x, y]);
+-            assert_eq!(quad[2].pos, [x + 15.0, y + 15.0]);
+-            assert!(quad.iter().all(|v| v.color == u32::MAX));
+-        }
+         assert!(
+             batch.vertices[12..]
+                 .iter()
+diff --git a/crates/horizon-client/src/title/create_world.rs b/crates/horizon-client/src/title/create_world.rs
+index a2fa6b8..74a6dc8 100644
+--- a/crates/horizon-client/src/title/create_world.rs
++++ b/crates/horizon-client/src/title/create_world.rs
+@@ -188,10 +188,13 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
+         x,
+         y,
+         w,
++        h: 20.0,
+         label,
+         enabled,
+         id,
+         icon: None,
++        card: false,
++        subtitle: None,
+     };
+     let (gx, gy) = grid(w, h, o.tab);
+     let mut buttons = match o.tab {
+diff --git a/crates/horizon-client/src/title/tests.rs b/crates/horizon-client/src/title/tests.rs
+index 572be2e..a8ad93d 100644
+--- a/crates/horizon-client/src/title/tests.rs
++++ b/crates/horizon-client/src/title/tests.rs
+@@ -66,6 +66,11 @@ impl Fixture {
+         self.title.enter_singleplayer();
+         self.title.click(240.0, 60.0, (480.0, 262.0));
+     }
++    /// The dashboard no longer has a Multiplayer card (the Switch build's
++    /// online play is phase 2); these tests still cover the screen itself.
++    fn open_multiplayer(&mut self) {
++        self.title.mode = Mode::Multiplayer(crate::multiplayer::Screen::list(&self.title.saves));
++    }
+     fn finish_backup(&mut self) {
+         self.title.backup_shown.set(true);
+         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+@@ -86,7 +91,7 @@ impl Drop for Fixture {
+ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
+     let mut f = Fixture::new();
+     f.title.last_server = "localhost:25566".into();
+-    f.click("Multiplayer");
++    f.open_multiplayer();
+     f.click("Direct Connection");
+     assert_eq!(f.title.focused_field().unwrap().1, "localhost:25566");
+ 
+@@ -98,7 +103,7 @@ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
+     *f.title.focused_field().unwrap().1 = "[::1]:25568".into();
+     f.title.escape();
+     f.title.escape();
+-    f.click("Multiplayer");
++    f.open_multiplayer();
+     f.click("Direct Connection");
+     assert_eq!(f.title.focused_field().unwrap().1, "[::1]:25568");
+ 
+@@ -120,11 +125,11 @@ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
+ #[test]
+ fn empty_singleplayer_opens_creation_and_cancel_returns_to_title() {
+     let mut f = Fixture::new();
+-    f.click("Singleplayer");
++    f.click("Worlds");
+     assert!(matches!(f.title.mode, Mode::Create { .. }));
+     f.click("Cancel");
+     assert!(matches!(f.title.mode, Mode::Main));
+-    f.click("Singleplayer");
++    f.click("Worlds");
+     f.title.escape();
+     assert!(matches!(f.title.mode, Mode::Main));
+     // Filtering an existing list down to zero results must not create a world.
+@@ -290,7 +295,7 @@ fn delete_requires_confirmation_and_both_cancel_paths_preserve_world() {
+     assert!(!f.title.saves.join("World").exists());
+     assert!(matches!(&f.title.mode, Mode::Select { worlds, selected: None } if worlds.is_empty()));
+     f.click("Back");
+-    f.click("Singleplayer");
++    f.click("Worlds");
+     assert!(matches!(f.title.mode, Mode::Create { .. }));
+ }
+ 
+@@ -500,11 +505,17 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
+         f.title.click(0.0, 0.0, (480.0, 262.0)),
+         (Action::None, false)
+     );
++    // Play opens the newest world in this process; the click still sounds.
+     assert_eq!(
+-        f.click_with_sound("Minecraft Realms"),
+-        (Action::None, false)
++        f.click_with_sound("Play"),
++        (
++            Action::Play {
++                folder: "World".into()
++            },
++            true
++        )
+     );
+-    assert_eq!(f.click_with_sound("Singleplayer"), (Action::None, true));
++    assert_eq!(f.click_with_sound("Worlds"), (Action::None, true));
+     assert_eq!(
+         f.click_with_sound("Play Selected World"),
+         (Action::None, false)
+@@ -527,7 +538,11 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
+     );
+     assert_eq!(f.click_with_sound("Cancel"), (Action::None, true));
+     assert_eq!(f.click_with_sound("Back"), (Action::None, true));
+-    assert_eq!(f.click_with_sound("Options..."), (Action::Options, true));
++    assert_eq!(f.click_with_sound("Settings"), (Action::None, true));
++    assert_eq!(
++        f.click_with_sound("More game settings"),
++        (Action::Options, true)
++    );
+ }
+ 
+ #[test]
+@@ -714,7 +729,7 @@ fn scrolled_world_list_draws_inside_the_list_and_drags_its_scroller() {
+ #[test]
+ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
+     let mut f = Fixture::new();
+-    f.click("Singleplayer");
++    f.click("Worlds");
+     let size = (480.0, 262.0);
+     let labels = |f: &Fixture| -> Vec<(String, f32, f32, bool)> {
+         f.title
+@@ -824,3 +839,38 @@ fn world_fields_edit_at_their_cursor() {
+     f.title.field_key(KeyCode::Backspace, false, false);
+     assert_eq!(f.title.search, "world");
+ }
++
++#[test]
++fn settings_edits_the_offline_name_the_game_reads() {
++    let mut f = Fixture::new();
++    f.click("Settings");
++    assert!(matches!(f.title.mode, Mode::Settings));
++    let size = (480.0, 262.0);
++    let field = name_field_rect(size.0);
++    f.title.click(field[0] + 4.0, field[1] + 4.0, size);
++    assert!(f.title.name_focused);
++    f.title.focused_field().unwrap().1.clear();
++    f.title.type_text("Dudu_2");
++    f.title.confirm_edit();
++    assert_eq!(
++        std::fs::read_to_string(f.root.join("horizon-player.txt")).unwrap(),
++        "name:Dudu_2\n"
++    );
++    assert_eq!(crate::launcher::player_name(&f.root), "Dudu_2");
++    // The Save button takes the same path; an invalid name is refused and
++    // the previous file is kept.
++    f.title.focused_field().unwrap().1.clear();
++    f.title.type_text("has space");
++    let save = f
++        .title
++        .buttons(size.0, size.1)
++        .into_iter()
++        .find(|b| b.id == 44)
++        .unwrap();
++    f.title.click(save.x + 4.0, save.y + 4.0, size);
++    assert_eq!(f.title.name_status, Some(NameStatus::Invalid));
++    assert_eq!(
++        std::fs::read_to_string(f.root.join("horizon-player.txt")).unwrap(),
++        "name:Dudu_2\n"
++    );
++}

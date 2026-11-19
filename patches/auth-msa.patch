@@ -1,0 +1,1996 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 18e32b1..120d3a9 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1329,6 +1329,7 @@ dependencies = [
+  "naga",
+  "png",
+  "pollster",
++ "ring",
+  "rustix 1.1.5",
+  "serde",
+  "serde_json",
+@@ -3669,6 +3670,8 @@ dependencies = [
+  "once_cell",
+  "rustls",
+  "rustls-pki-types",
++ "serde",
++ "serde_json",
+  "url",
+  "webpki-roots 0.26.11",
+ ]
+diff --git a/crates/horizon-client/Cargo.toml b/crates/horizon-client/Cargo.toml
+index a75b0a6..2b71785 100644
+--- a/crates/horizon-client/Cargo.toml
++++ b/crates/horizon-client/Cargo.toml
+@@ -33,6 +33,10 @@ png = "0.18"
+ sha2 = "0.10.9"
+ # Server resource packs are checked and cached by their SHA-1, as vanilla does.
+ sha1 = "0.10"
++# Microsoft sign-in: PBKDF2-HMAC-SHA256 and AES-256-GCM for the encrypted
++# refresh token on the Switch's SD card (ring is already in the tree through
++# ureq's TLS; the workspace patches it for the Switch).
++ring = "0.17"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = { version = "1.0.151", features = ["raw_value"] }
+ # hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
+@@ -56,8 +60,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
+ gilrs = { version = "0.11", optional = true }
+ # The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
+ horizon-dualsense = { path = "../horizon-dualsense", optional = true }
+-# HTTPS to the Minecraft services (online-mode session join).
+-ureq = { version = "2", default-features = false, features = ["tls"] }
++# HTTPS to the Minecraft services (online-mode session join and Microsoft sign-in).
++ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+ 
+ [target.'cfg(not(target_os = "horizon"))'.dependencies]
+ wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
+diff --git a/crates/horizon-client/src/auth.rs b/crates/horizon-client/src/auth.rs
+index b899ea5..76bccbd 100644
+--- a/crates/horizon-client/src/auth.rs
++++ b/crates/horizon-client/src/auth.rs
+@@ -1,14 +1,32 @@
+ //! The Microsoft account the launcher signed in, handed over in a session
+ //! file (docs/microsoft-account.md), and the Minecraft services call
+ //! online-mode servers need: authlib's MinecraftServicesSessionService.joinServer
+-//! through the services discovery document. The access token stays in this
+-//! process's memory: it is never logged, printed or written anywhere.
++//! through the services discovery document. The access token is never logged,
++//! printed or written in plaintext anywhere; the launcher's saved tokens are
++//! encrypted (see `auth::login`).
++//!
++//! The launcher (docs/microsoft-account.md, LAUNCHER-SPEC.md) signs in with
++//! the device-code flow in `auth::login`: [`begin_device_code`] shows the
++//! player a code, [`poll`] waits for approval, [`complete`] runs Xbox Live,
++//! XSTS, the Minecraft services, entitlements and profile, and [`set_current`]
++//! hands the result to the game. [`save`] keeps the refresh token encrypted on
++//! the SD card, [`load_saved`] refreshes it on the next boot, and [`sign_out`]
++//! removes it. The Switch has no OS keychain: without a PIN the session lives
++//! in memory only and [`NO_SECURE_STORAGE`] says so.
+ use std::{
+     path::Path,
+-    sync::{Arc, Mutex, OnceLock},
++    sync::{Arc, Mutex, RwLock},
+     time::{Duration, SystemTime},
+ };
+ 
++mod login;
++pub use login::{
++    AUTH_DIR, Account, CLIENT_ID_FILE, DeviceCode, EncryptedStore, Endpoints, LoginFlow,
++    MemoryStore, NO_SECURE_STORAGE, NOT_CONFIGURED, Poll, SIGN_IN_AGAIN, SecretStore, SignedIn,
++    begin_device_code, begin_device_code_at, client_id, complete, load_saved, load_saved_at,
++    open_store, poll, save, sign_out, wait_for_sign_in,
++};
++
+ /// MinecraftServicesEnvironment.PROD.
+ pub const DEFAULT_DISCOVERY: &str = "https://discovery.minecraftservices.com/minecraft/client";
+ /// A session file older than this is refused: it can't be replayed later.
+@@ -49,6 +67,16 @@ impl AuthSession {
+             access_token: access_token.to_owned(),
+         }
+     }
++    /// A signed-in Microsoft account: `new` plus the XUID the Xbox Live step
++    /// reports (the launcher's sign-in knows it; a session file may omit it).
++    pub fn new_msa(name: &str, uuid: u128, access_token: &str, xuid: Option<String>) -> Self {
++        Self {
++            name: name.to_owned(),
++            uuid,
++            xuid,
++            access_token: access_token.to_owned(),
++        }
++    }
+     /// The session file's JSON: {"name", "uuid", "access_token", "user_type": "msa", "xuid"}.
+     pub fn parse(text: &str) -> Result<Self, String> {
+         let v: serde_json::Value =
+@@ -103,14 +131,27 @@ impl AuthSession {
+     }
+ }
+ 
+-static CURRENT: OnceLock<Arc<AuthSession>> = OnceLock::new();
++/// The account this game was started with, or the launcher signed in after
++/// boot. It can change while the game runs (LAUNCHER-SPEC.md 3.2): the next
++/// world opened or server joined uses the new one; a connection already open
++/// keeps the name it started with.
++static CURRENT: RwLock<Option<Arc<AuthSession>>> = RwLock::new(None);
+ 
+-/// The account this game was started with (set once at start).
+ pub fn set_current(session: AuthSession) {
+-    let _ = CURRENT.set(Arc::new(session));
++    *CURRENT
++        .write()
++        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(session));
++}
++pub fn clear_current() {
++    *CURRENT
++        .write()
++        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+ }
+ pub fn current() -> Option<Arc<AuthSession>> {
+-    CURRENT.get().cloned()
++    CURRENT
++        .read()
++        .unwrap_or_else(|poisoned| poisoned.into_inner())
++        .clone()
+ }
+ 
+ /// Why joining a server through the session service failed, like the
+diff --git a/crates/horizon-client/src/auth/login.rs b/crates/horizon-client/src/auth/login.rs
+new file mode 100644
+index 0000000..d5d8ace
+--- /dev/null
++++ b/crates/horizon-client/src/auth/login.rs
+@@ -0,0 +1,1069 @@
++//! Microsoft sign-in for the in-game launcher (docs/microsoft-account.md,
++//! LAUNCHER-SPEC.md §3): the OAuth device-code flow, then Xbox Live, XSTS, the
++//! Minecraft services, the ownership check and the profile. The result is an
++//! [`AuthSession`] in [`super::current`], which online-mode play already uses.
++//!
++//! The client ID is configuration, never a constant: `HORIZON_MSA_CLIENT_ID`
++//! at run time, or `sdmc:/switch/horizon/msa-client-id.txt` (one GUID, `#`
++//! comments allowed). Without one, [`begin_device_code`] says sign-in is not
++//! configured and the game stays offline. Never use another launcher's ID.
++//!
++//! The Switch has no OS keychain. The refresh token (and the short-lived
++//! Minecraft token) are kept in memory only unless the launcher opens a store
++//! with a PIN: [`open_store`] then writes an AES-256-GCM blob under
++//! `sdmc:/switch/horizon/auth/`, whose key is derived with PBKDF2-HMAC-SHA256
++//! from the PIN and a per-install random device key.
++//! That protects against someone copying the SD card; it does not protect a
++//! compromised console or a keylogger. Without a PIN, `store.persistent()` is
++//! false and the UI must show [`NO_SECURE_STORAGE`].
++//!
++//! Tokens, refresh tokens, device codes and authorization codes never appear
++//! in `Debug`, errors or logs. Requests are named by service, never by URL.
++//!
++//! The launcher's sequence (UI may be a stub; it calls this API):
++//!
++//! ```ignore
++//! let mut flow = auth::begin_device_code()?;       // show flow.device
++//! auth::wait_for_sign_in(&mut flow, &|| cancelled)?;
++//! let signed = auth::complete(flow)?;              // sets auth::current()
++//! auth::save(store, &signed)?;                     // optional, encrypted
++//! // next boot:
++//! auth::load_saved(store)?;                        // refreshes, sets current
++//! // sign out:
++//! auth::sign_out(store)?;                          // clears current + file
++//! ```
++use super::{AuthSession, clear_current, parse_uuid, set_current};
++use ring::{
++    aead, pbkdf2,
++    rand::{SecureRandom, SystemRandom},
++};
++use serde_json::{Value, json};
++use std::{
++    collections::HashMap,
++    fs,
++    io::{self, Write as _},
++    num::NonZeroU32,
++    path::{Path, PathBuf},
++    sync::Mutex,
++    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
++};
++
++/// Where the encrypted refresh token lives on the Switch's SD card.
++pub const AUTH_DIR: &str = "sdmc:/switch/horizon/auth";
++/// Where the launcher's Azure application (client) ID is written on the SD card.
++pub const CLIENT_ID_FILE: &str = "sdmc:/switch/horizon/msa-client-id.txt";
++/// The key of a saved account in a [`SecretStore`].
++const STORE_KEY: &str = "dev.playhorizon.switch.msa";
++/// `offline_access` is what returns a refresh token.
++const SCOPE: &str = "XboxLive.signin offline_access";
++const MICROSOFT: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
++const AUTH_FILE: &str = "account.bin";
++const DEVICE_KEY_FILE: &str = "device.key";
++/// `HZMA` and the storage format version.
++const MAGIC: &[u8; 5] = b"HZMA1";
++const SALT_LEN: usize = 16;
++const NONCE_LEN: usize = 12;
++const TAG_LEN: usize = 16;
++const KEY_LEN: usize = 32;
++/// Cost of the PIN stretching. A Switch takes a moment; a copied SD card takes
++/// the same moment per guess.
++const PBKDF2_ROUNDS: u32 = 120_000;
++/// A Minecraft token with less than this left is renewed before playing.
++const RENEW_BEFORE: u64 = 3600;
++
++pub const NOT_CONFIGURED: &str = "Microsoft sign-in is not configured. Set HORIZON_MSA_CLIENT_ID or put the app's client ID in sdmc:/switch/horizon/msa-client-id.txt. The game still plays offline: single player, LAN and offline-mode servers work.";
++pub const SIGN_IN_AGAIN: &str = "Your Microsoft sign-in expired. Sign in again.";
++pub const NO_SECURE_STORAGE: &str = "No PIN set: you are signed in until Horizon closes, then you will have to sign in again. Set a PIN to keep the refresh token encrypted on the SD card.";
++const OWNS: &str = "This account doesn't own Minecraft: Java Edition.";
++const NO_PROFILE: &str =
++    "This account has no Minecraft profile yet. Create one at minecraft.net, then sign in again.";
++
++fn now() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |d| d.as_secs())
++}
++
++// ----- Configuration -----------------------------------------------------------------------------
++
++/// The folder the encrypted record goes in: the SD card path on the Switch,
++/// the launcher data folder in desktop builds and tests.
++pub fn auth_dir() -> PathBuf {
++    #[cfg(target_os = "horizon")]
++    {
++        PathBuf::from(AUTH_DIR)
++    }
++    #[cfg(not(target_os = "horizon"))]
++    {
++        crate::logging::game_home().join("auth")
++    }
++}
++
++fn client_id_file() -> PathBuf {
++    #[cfg(target_os = "horizon")]
++    {
++        PathBuf::from(CLIENT_ID_FILE)
++    }
++    #[cfg(not(target_os = "horizon"))]
++    {
++        crate::logging::game_home().join("msa-client-id.txt")
++    }
++}
++
++/// The configured Azure application, if any: the run-time variable wins over
++/// the file on the SD card, which wins over the build-time value. Empty or a
++/// file with only comments means none.
++pub fn client_id() -> Option<String> {
++    let runtime = std::env::var("HORIZON_MSA_CLIENT_ID").ok();
++    let file = read_client_id_file(&client_id_file());
++    let built = option_env!("HORIZON_MSA_CLIENT_ID").map(str::to_owned);
++    pick_client_id(runtime, file, built)
++}
++
++fn pick_client_id(
++    runtime: Option<String>,
++    file: Option<String>,
++    built: Option<String>,
++) -> Option<String> {
++    [runtime, file, built]
++        .into_iter()
++        .flatten()
++        .map(|id| id.trim().trim_start_matches('\u{feff}').trim().to_owned())
++        .find(|id| !id.is_empty())
++}
++
++/// The first non-empty line that is not a `#` comment. A missing file is not
++/// an error: sign-in is simply not configured.
++fn read_client_id_file(path: &Path) -> Option<String> {
++    let text = fs::read_to_string(path).ok()?;
++    text.lines()
++        .map(|line| line.trim().trim_start_matches('\u{feff}').trim())
++        .find(|line| !line.is_empty() && !line.starts_with('#'))
++        .map(str::to_owned)
++}
++
++/// The services the flow talks to. Tests and harnesses point them at a local
++/// mock; nothing else changes.
++#[derive(Clone, Debug)]
++pub struct Endpoints {
++    /// The OAuth 2.0 v2 endpoints (`…/devicecode`, `…/token`).
++    pub microsoft: String,
++    pub xbox_user: String,
++    pub xsts: String,
++    /// `https://api.minecraftservices.com`, or a mock.
++    pub minecraft: String,
++}
++
++impl Endpoints {
++    pub fn live() -> Self {
++        // `HORIZON_MSA_MICROSOFT_ENDPOINT` is a development harness override
++        // (`docs/microsoft-account.md`); the Switch build has no environment.
++        let microsoft = std::env::var("HORIZON_MSA_MICROSOFT_ENDPOINT")
++            .ok()
++            .map(|url| url.trim().to_owned())
++            .filter(|url| !url.is_empty())
++            .unwrap_or_else(|| MICROSOFT.to_owned());
++        Self {
++            microsoft,
++            xbox_user: "https://user.auth.xboxlive.com/user/authenticate".to_owned(),
++            xsts: "https://xsts.auth.xboxlive.com/xsts/authorize".to_owned(),
++            minecraft: "https://api.minecraftservices.com".to_owned(),
++        }
++    }
++}
++
++fn agent() -> ureq::Agent {
++    ureq::AgentBuilder::new()
++        .timeout(Duration::from_secs(20))
++        .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
++        .build()
++}
++
++enum Body<'a> {
++    Form(Vec<(&'a str, &'a str)>),
++    Json(Value),
++}
++
++/// One request: the status and the JSON body (empty when there is none).
++/// Transport errors name the service, never the URL or the request, so a token
++/// in a form body cannot reach a log.
++fn send(
++    request: ureq::Request,
++    body: Option<Body<'_>>,
++    service: &str,
++) -> Result<(u16, Value), String> {
++    let result = match body {
++        None => request.call(),
++        Some(Body::Form(fields)) => request.send_form(&fields),
++        Some(Body::Json(value)) => request.set("Accept", "application/json").send_json(value),
++    };
++    let response = match result {
++        Ok(response) => response,
++        Err(ureq::Error::Status(_, response)) => response,
++        Err(ureq::Error::Transport(_)) => {
++            return Err(format!(
++                "Could not reach {service}. Check your internet connection."
++            ));
++        }
++    };
++    let status = response.status();
++    let text = response.into_string().unwrap_or_default();
++    Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
++}
++
++fn str_field(value: &Value, key: &str) -> Option<String> {
++    value.get(key).and_then(Value::as_str).map(str::to_owned)
++}
++
++// ----- The device-code flow ----------------------------------------------------------------------
++
++/// What the player types at the verification page. The `device_code` that is
++/// exchanged for tokens is private and hidden from `Debug`.
++#[derive(Clone)]
++pub struct DeviceCode {
++    pub user_code: String,
++    pub verification_uri: String,
++    /// The server's requested interval, in seconds (at least one).
++    pub interval: u64,
++    /// Unix time after which the code is refused.
++    pub expires_at: u64,
++    device_code: String,
++}
++
++impl std::fmt::Debug for DeviceCode {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("DeviceCode")
++            .field("user_code", &self.user_code)
++            .field("verification_uri", &self.verification_uri)
++            .field("interval", &self.interval)
++            .field("expires_at", &self.expires_at)
++            .finish_non_exhaustive()
++    }
++}
++
++/// The Microsoft tokens; the access token only lives long enough for the Xbox
++/// step, the refresh token is what [`save`] keeps (encrypted).
++struct MsTokens {
++    access: String,
++    refresh: String,
++}
++
++impl std::fmt::Debug for MsTokens {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("MsTokens(<hidden>)")
++    }
++}
++
++/// One device-code poll's outcome.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Poll {
++    /// `authorization_pending`: the player has not approved yet.
++    Pending,
++    /// `slow_down`: wait five seconds more before the next poll.
++    SlowDown,
++    /// Approved; [`complete`] now runs the Xbox/Minecraft chain.
++    Authorized,
++}
++
++/// A sign-in in progress: the code to show plus the tokens once approved.
++pub struct LoginFlow {
++    pub device: DeviceCode,
++    client_id: String,
++    endpoints: Endpoints,
++    tokens: Option<MsTokens>,
++}
++
++impl std::fmt::Debug for LoginFlow {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("LoginFlow")
++            .field("device", &self.device)
++            .field("authorized", &self.tokens.is_some())
++            .finish_non_exhaustive()
++    }
++}
++
++fn oauth_error(value: &Value) -> String {
++    match value.get("error").and_then(Value::as_str) {
++        Some("authorization_declined" | "access_denied") => {
++            "Sign-in was declined in the browser.".into()
++        }
++        Some("expired_token") => "The sign-in code expired. Start again.".into(),
++        Some("bad_verification_code") => "The sign-in code was not recognised. Start again.".into(),
++        Some("invalid_grant") => SIGN_IN_AGAIN.into(),
++        Some("invalid_client" | "unauthorized_client") => {
++            "Microsoft refused this launcher's app registration (client ID).".into()
++        }
++        Some("slow_down") => "Microsoft asked to wait before polling again.".into(),
++        Some(other) => format!("Microsoft sign-in failed ({other})."),
++        None => "Microsoft sign-in failed.".into(),
++    }
++}
++
++fn parse_device_code(status: u16, value: &Value) -> Result<DeviceCode, String> {
++    if status != 200 {
++        return Err(oauth_error(value));
++    }
++    let (Some(user_code), Some(device_code)) = (
++        str_field(value, "user_code"),
++        str_field(value, "device_code"),
++    ) else {
++        return Err("Microsoft did not return a sign-in code.".into());
++    };
++    Ok(DeviceCode {
++        user_code,
++        verification_uri: str_field(value, "verification_uri")
++            .or_else(|| str_field(value, "verification_uri_complete"))
++            .unwrap_or_else(|| "https://www.microsoft.com/link".into()),
++        interval: value
++            .get("interval")
++            .and_then(Value::as_u64)
++            .unwrap_or(5)
++            .max(1),
++        expires_at: now()
++            + value
++                .get("expires_in")
++                .and_then(Value::as_u64)
++                .unwrap_or(900),
++        device_code,
++    })
++}
++
++fn parse_ms_tokens(status: u16, value: &Value) -> Result<MsTokens, String> {
++    if value.get("error").and_then(Value::as_str).is_some() {
++        return Err(oauth_error(value));
++    }
++    match (
++        status,
++        str_field(value, "access_token"),
++        str_field(value, "refresh_token"),
++    ) {
++        (200, Some(access), Some(refresh)) if !refresh.is_empty() => {
++            Ok(MsTokens { access, refresh })
++        }
++        (200, Some(_), _) => Err("Microsoft did not return a refresh token. Sign in again.".into()),
++        _ => Err(oauth_error(value)),
++    }
++}
++
++/// Starts a sign-in: asks Microsoft for a code to show the player. The Azure
++/// client ID comes from the environment or the SD card; without one this
++/// returns [`NOT_CONFIGURED`] instead of touching the network.
++pub fn begin_device_code() -> Result<LoginFlow, String> {
++    let client_id = client_id().ok_or_else(|| NOT_CONFIGURED.to_owned())?;
++    begin_device_code_at(Endpoints::live(), &client_id)
++}
++
++/// The device-code request against explicit endpoints (harnesses and tests).
++pub fn begin_device_code_at(endpoints: Endpoints, client_id: &str) -> Result<LoginFlow, String> {
++    let client_id = client_id.trim();
++    if client_id.is_empty() {
++        return Err(NOT_CONFIGURED.into());
++    }
++    let (status, value) = send(
++        agent().post(&format!("{}/devicecode", endpoints.microsoft)),
++        Some(Body::Form(vec![("client_id", client_id), ("scope", SCOPE)])),
++        "Microsoft",
++    )?;
++    Ok(LoginFlow {
++        device: parse_device_code(status, &value)?,
++        client_id: client_id.to_owned(),
++        endpoints,
++        tokens: None,
++    })
++}
++
++/// One poll of the token endpoint. The launcher waits `flow.device.interval`
++/// seconds between calls and adds five after [`Poll::SlowDown`]; this function
++/// does no waiting itself.
++pub fn poll(flow: &mut LoginFlow) -> Result<Poll, String> {
++    if flow.tokens.is_some() {
++        return Ok(Poll::Authorized);
++    }
++    if now() > flow.device.expires_at {
++        return Err("The sign-in code expired. Start again.".into());
++    }
++    let (status, value) = send(
++        agent().post(&format!("{}/token", flow.endpoints.microsoft)),
++        Some(Body::Form(vec![
++            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
++            ("client_id", &flow.client_id),
++            ("device_code", &flow.device.device_code),
++        ])),
++        "Microsoft",
++    )?;
++    match value.get("error").and_then(Value::as_str) {
++        Some("authorization_pending") => Ok(Poll::Pending),
++        Some("slow_down") => Ok(Poll::SlowDown),
++        _ => {
++            flow.tokens = Some(parse_ms_tokens(status, &value)?);
++            Ok(Poll::Authorized)
++        }
++    }
++}
++
++/// Polls until the player approves, the code expires or `cancelled` says stop.
++/// The tokens stay inside `flow`; [`complete`] turns them into an account.
++pub fn wait_for_sign_in(flow: &mut LoginFlow, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
++    let mut interval = flow.device.interval.max(1);
++    loop {
++        let until = Instant::now() + Duration::from_secs(interval);
++        while Instant::now() < until {
++            if cancelled() {
++                return Err("Sign-in cancelled.".into());
++            }
++            std::thread::sleep(Duration::from_millis(100));
++        }
++        if now() > flow.device.expires_at {
++            return Err("The sign-in code expired. Start again.".into());
++        }
++        match poll(flow)? {
++            Poll::Pending => {}
++            Poll::SlowDown => interval += 5,
++            Poll::Authorized => return Ok(()),
++        }
++    }
++}
++
++fn refresh_ms(endpoints: &Endpoints, client_id: &str, refresh: &str) -> Result<MsTokens, String> {
++    let (status, value) = send(
++        agent().post(&format!("{}/token", endpoints.microsoft)),
++        Some(Body::Form(vec![
++            ("grant_type", "refresh_token"),
++            ("client_id", client_id),
++            ("refresh_token", refresh),
++            ("scope", SCOPE),
++        ])),
++        "Microsoft",
++    )?;
++    parse_ms_tokens(status, &value)
++}
++
++// ----- Xbox Live, XSTS, Minecraft ----------------------------------------------------------------
++
++/// The XSTS `XErr` codes, as the official launcher explains them.
++fn xsts_error(code: u64) -> String {
++    match code {
++        2148916233 => "This Microsoft account has no Xbox profile yet. Sign in once at xbox.com to create one, then try again.".into(),
++        2148916235 => "Xbox Live is not available in your country or region.".into(),
++        2148916236 | 2148916237 => "This account needs adult verification on xbox.com before it can play.".into(),
++        2148916238 => "This is a child account: an adult has to add it to a Microsoft family first.".into(),
++        other => format!("Xbox Live refused the sign-in (error {other})."),
++    }
++}
++
++struct MinecraftToken {
++    token: String,
++    expires_at: u64,
++    xuid: Option<String>,
++}
++
++/// Microsoft access token -> Xbox Live -> XSTS -> Minecraft access token.
++fn minecraft_login(endpoints: &Endpoints, ms_access: &str) -> Result<MinecraftToken, String> {
++    let (status, xbl) = send(
++        agent().post(&endpoints.xbox_user),
++        Some(Body::Json(json!({
++            "Properties": {
++                "AuthMethod": "RPS",
++                "SiteName": "user.auth.xboxlive.com",
++                "RpsTicket": format!("d={ms_access}"),
++            },
++            "RelyingParty": "http://auth.xboxlive.com",
++            "TokenType": "JWT",
++        }))),
++        "Xbox Live",
++    )?;
++    let xbl_token = str_field(&xbl, "Token")
++        .filter(|_| status == 200)
++        .ok_or("Xbox Live refused the sign-in.")?;
++    let (status, xsts) = send(
++        agent().post(&endpoints.xsts),
++        Some(Body::Json(json!({
++            "Properties": { "SandboxId": "RETAIL", "UserTokens": [xbl_token] },
++            "RelyingParty": "rp://api.minecraftservices.com/",
++            "TokenType": "JWT",
++        }))),
++        "Xbox Live",
++    )?;
++    if let Some(code) = xsts.get("XErr").and_then(Value::as_u64) {
++        return Err(xsts_error(code));
++    }
++    let claims = xsts.pointer("/DisplayClaims/xui/0");
++    let (Some(xsts_token), Some(uhs)) = (
++        str_field(&xsts, "Token").filter(|_| status == 200),
++        claims.and_then(|claim| str_field(claim, "uhs")),
++    ) else {
++        return Err("Xbox Live refused the sign-in.".into());
++    };
++    let xuid = claims.and_then(|claim| str_field(claim, "xid"));
++    let (status, minecraft) = send(
++        agent().post(&format!(
++            "{}/authentication/login_with_xbox",
++            endpoints.minecraft
++        )),
++        Some(Body::Json(json!({
++            "identityToken": format!("XBL3.0 x={uhs};{xsts_token}"),
++        }))),
++        "the Minecraft services",
++    )?;
++    match (status, str_field(&minecraft, "access_token")) {
++        (200, Some(token)) => Ok(MinecraftToken {
++            token,
++            expires_at: now()
++                + minecraft
++                    .get("expires_in")
++                    .and_then(Value::as_u64)
++                    .unwrap_or(86_400),
++            xuid,
++        }),
++        // New Azure apps are refused until Mojang approves them.
++        (403, _) => Err(
++            "The Minecraft services refused this launcher: its app is not approved by Mojang yet."
++                .into(),
++        ),
++        (429, _) => Err("Too many sign-ins in a short time. Wait a minute and try again.".into()),
++        _ => Err("The Minecraft services refused the sign-in.".into()),
++    }
++}
++
++fn bearer(request: ureq::Request, token: &str) -> ureq::Request {
++    request.set("Authorization", &format!("Bearer {token}"))
++}
++
++/// Whether the account owns Minecraft: Java Edition (Game Pass included).
++fn owns_game(endpoints: &Endpoints, token: &str) -> Result<bool, String> {
++    let (status, value) = send(
++        bearer(
++            agent().get(&format!("{}/entitlements/mcstore", endpoints.minecraft)),
++            token,
++        ),
++        None,
++        "the Minecraft services",
++    )?;
++    if status == 401 {
++        return Err(SIGN_IN_AGAIN.into());
++    }
++    if status != 200 {
++        return Err("Could not check which games this account owns.".into());
++    }
++    Ok(parse_entitlements(&value))
++}
++
++fn parse_entitlements(value: &Value) -> bool {
++    value
++        .get("items")
++        .and_then(Value::as_array)
++        .is_some_and(|items| {
++            items.iter().any(|item| {
++                matches!(
++                    item.get("name").and_then(Value::as_str),
++                    Some("game_minecraft" | "product_minecraft")
++                )
++            })
++        })
++}
++
++/// A Minecraft profile: public data only, never a token.
++#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct Account {
++    /// The profile UUID without dashes, lower case.
++    pub uuid: String,
++    pub name: String,
++    #[serde(default)]
++    pub xuid: Option<String>,
++    /// The active skin's URL (`textures.minecraft.net`).
++    #[serde(default)]
++    pub skin_url: Option<String>,
++    /// `classic` or `slim`.
++    #[serde(default)]
++    pub skin_variant: Option<String>,
++    #[serde(default)]
++    pub cape_url: Option<String>,
++}
++
++fn active_property<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
++    value.get(key).and_then(Value::as_array).and_then(|list| {
++        list.iter()
++            .find(|item| item.get("state").and_then(Value::as_str) == Some("ACTIVE"))
++    })
++}
++
++fn parse_profile(value: &Value) -> Result<Account, String> {
++    let id = str_field(value, "id").ok_or("Could not read the Minecraft profile.")?;
++    let uuid = parse_uuid(&id).ok_or("Could not read the Minecraft profile.")?;
++    let name = str_field(value, "name").ok_or("Could not read the Minecraft profile.")?;
++    let skin = active_property(value, "skins");
++    let skin_url = skin.and_then(|skin| str_field(skin, "url"));
++    let skin_variant = skin_url.as_ref().map(|_| {
++        skin.and_then(|skin| str_field(skin, "variant"))
++            .unwrap_or_else(|| "CLASSIC".into())
++            .to_lowercase()
++    });
++    Ok(Account {
++        uuid: format!("{uuid:032x}"),
++        name,
++        xuid: None,
++        skin_url,
++        skin_variant,
++        cape_url: active_property(value, "capes").and_then(|cape| str_field(cape, "url")),
++    })
++}
++
++fn profile(endpoints: &Endpoints, token: &str) -> Result<Account, String> {
++    let (status, value) = send(
++        bearer(
++            agent().get(&format!("{}/minecraft/profile", endpoints.minecraft)),
++            token,
++        ),
++        None,
++        "the Minecraft services",
++    )?;
++    match status {
++        200 => parse_profile(&value),
++        401 => Err(SIGN_IN_AGAIN.into()),
++        404 => Err(NO_PROFILE.into()),
++        _ => Err("Could not read the Minecraft profile.".into()),
++    }
++}
++
++// ----- Saved accounts ----------------------------------------------------------------------------
++
++/// What is kept for one account: the account's public data and its secrets.
++#[derive(Clone, serde::Serialize, serde::Deserialize)]
++struct Secrets {
++    /// The client ID the refresh token belongs to; empty on records from a
++    /// build that predates this field.
++    #[serde(default)]
++    client_id: String,
++    refresh_token: String,
++    minecraft_token: String,
++    minecraft_expires_at: u64,
++    #[serde(default)]
++    xuid: Option<String>,
++}
++
++impl std::fmt::Debug for Secrets {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("Secrets(<hidden>)")
++    }
++}
++
++#[derive(Clone, serde::Serialize, serde::Deserialize)]
++struct SavedRecord {
++    account: Account,
++    secrets: Secrets,
++}
++
++/// A finished sign-in: the public account the UI lists and the session that is
++/// already installed in [`super::current`]. Tokens are not exposed; use
++/// [`super::current`] when the game needs the session.
++#[derive(Clone)]
++pub struct SignedIn {
++    pub account: Account,
++    secrets: Secrets,
++}
++
++impl std::fmt::Debug for SignedIn {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("SignedIn")
++            .field("account", &self.account)
++            .field("secrets", &"<hidden>")
++            .finish()
++    }
++}
++
++fn install(account: &Account, access_token: &str) -> Result<(), String> {
++    let uuid = parse_uuid(&account.uuid)
++        .ok_or("The Minecraft profile has an invalid UUID. Sign in again.")?;
++    set_current(AuthSession::new_msa(
++        &account.name,
++        uuid,
++        access_token,
++        account.xuid.clone(),
++    ));
++    Ok(())
++}
++
++/// From Microsoft tokens to a ready account: Xbox, XSTS, Minecraft, ownership,
++/// profile.
++fn finish_sign_in(
++    endpoints: &Endpoints,
++    ms: MsTokens,
++    client_id: &str,
++) -> Result<(Account, Secrets), String> {
++    let minecraft = minecraft_login(endpoints, &ms.access)?;
++    if !owns_game(endpoints, &minecraft.token)? {
++        return Err(OWNS.into());
++    }
++    let mut account = profile(endpoints, &minecraft.token)?;
++    account.xuid = minecraft.xuid.clone();
++    let secrets = Secrets {
++        client_id: client_id.to_owned(),
++        refresh_token: ms.refresh,
++        minecraft_token: minecraft.token,
++        minecraft_expires_at: minecraft.expires_at,
++        xuid: minecraft.xuid,
++    };
++    Ok((account, secrets))
++}
++
++/// Runs the rest of the chain after [`poll`] said [`Poll::Authorized`], installs
++/// the session with [`super::set_current`] and returns the public account.
++pub fn complete(flow: LoginFlow) -> Result<SignedIn, String> {
++    let LoginFlow {
++        client_id,
++        endpoints,
++        tokens,
++        ..
++    } = flow;
++    let Some(ms) = tokens else {
++        return Err("The Microsoft sign-in has not been approved yet.".into());
++    };
++    let (account, secrets) = finish_sign_in(&endpoints, ms, &client_id)?;
++    install(&account, &secrets.minecraft_token)?;
++    Ok(SignedIn { account, secrets })
++}
++
++/// Where the secrets of one account are kept. The encrypted store writes one
++/// record; the memory store is what runs without a PIN.
++pub trait SecretStore: Send + Sync {
++    fn get(&self, key: &str) -> Result<Option<String>, String>;
++    fn set(&self, key: &str, secret: &str) -> Result<(), String>;
++    fn delete(&self, key: &str) -> Result<(), String>;
++    /// False for memory: the sign-in is gone when the process closes.
++    fn persistent(&self) -> bool;
++}
++
++/// In-memory only: the session works until Horizon closes, as LAUNCHER-SPEC.md
++/// requires when no secure storage is available.
++#[derive(Default)]
++pub struct MemoryStore(Mutex<HashMap<String, String>>);
++
++impl SecretStore for MemoryStore {
++    fn get(&self, key: &str) -> Result<Option<String>, String> {
++        Ok(self
++            .0
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .get(key)
++            .cloned())
++    }
++    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
++        self.0
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .insert(key.to_owned(), secret.to_owned());
++        Ok(())
++    }
++    fn delete(&self, key: &str) -> Result<(), String> {
++        self.0
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .remove(key);
++        Ok(())
++    }
++    fn persistent(&self) -> bool {
++        false
++    }
++}
++
++/// The refresh token, encrypted with AES-256-GCM under a key derived from the
++/// player's PIN and a per-install random device key. The device key lives beside
++/// the record: it stops a record from being replayed on another install, but it
++/// travels with a full SD-card copy. The PIN is what protects that copy.
++pub struct EncryptedStore {
++    file: PathBuf,
++    pin: String,
++    device_key: [u8; KEY_LEN],
++}
++
++impl std::fmt::Debug for EncryptedStore {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("EncryptedStore")
++            .field("file", &self.file)
++            .finish_non_exhaustive()
++    }
++}
++
++impl EncryptedStore {
++    pub fn new(dir: impl AsRef<Path>, pin: &str) -> Result<Self, String> {
++        let pin = pin.trim();
++        if pin.is_empty() {
++            return Err("A PIN is required to save the sign-in.".into());
++        }
++        let dir = dir.as_ref();
++        fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
++        Ok(Self {
++            file: dir.join(AUTH_FILE),
++            pin: pin.to_owned(),
++            device_key: load_or_create_device_key(dir)?,
++        })
++    }
++
++    fn derive_key(&self, salt: &[u8]) -> [u8; KEY_LEN] {
++        // The device key is mixed in before stretching, so a record copied
++        // alone cannot be opened even when the PIN is known.
++        let mut password = Vec::with_capacity(self.pin.len() + 1 + KEY_LEN);
++        password.extend_from_slice(self.pin.as_bytes());
++        password.push(0);
++        password.extend_from_slice(&self.device_key);
++        let mut key = [0u8; KEY_LEN];
++        pbkdf2::derive(
++            pbkdf2::PBKDF2_HMAC_SHA256,
++            NonZeroU32::new(PBKDF2_ROUNDS).expect("PBKDF2 rounds are non-zero"),
++            salt,
++            &password,
++            &mut key,
++        );
++        key
++    }
++
++    fn encrypt(&self, plain: &str) -> Result<Vec<u8>, String> {
++        let rng = SystemRandom::new();
++        let mut salt = [0u8; SALT_LEN];
++        rng.fill(&mut salt)
++            .map_err(|_| "No system randomness for the sign-in store.".to_owned())?;
++        let mut nonce = [0u8; NONCE_LEN];
++        rng.fill(&mut nonce)
++            .map_err(|_| "No system randomness for the sign-in store.".to_owned())?;
++        let key = self.derive_key(&salt);
++        let key = aead::LessSafeKey::new(
++            aead::UnboundKey::new(&aead::AES_256_GCM, &key)
++                .map_err(|_| "Could not set up the sign-in cipher.".to_owned())?,
++        );
++        let mut body = plain.as_bytes().to_vec();
++        key.seal_in_place_append_tag(
++            aead::Nonce::assume_unique_for_key(nonce),
++            aead::Aad::from(&MAGIC[..]),
++            &mut body,
++        )
++        .map_err(|_| "Could not encrypt the sign-in.".to_owned())?;
++        let mut out = Vec::with_capacity(MAGIC.len() + SALT_LEN + NONCE_LEN + body.len());
++        out.extend_from_slice(MAGIC);
++        out.extend_from_slice(&salt);
++        out.extend_from_slice(&nonce);
++        out.extend_from_slice(&body);
++        Ok(out)
++    }
++
++    fn decrypt(&self, bytes: &[u8]) -> Result<String, String> {
++        let header = MAGIC.len() + SALT_LEN + NONCE_LEN;
++        if bytes.len() < header + TAG_LEN || &bytes[..MAGIC.len()] != MAGIC {
++            return Err("The saved sign-in is corrupted. Sign in again.".into());
++        }
++        let salt: [u8; SALT_LEN] = bytes[MAGIC.len()..MAGIC.len() + SALT_LEN]
++            .try_into()
++            .expect("slice length checked");
++        let nonce: [u8; NONCE_LEN] = bytes[MAGIC.len() + SALT_LEN..header]
++            .try_into()
++            .expect("slice length checked");
++        let mut body = bytes[header..].to_vec();
++        let key = self.derive_key(&salt);
++        let key = aead::LessSafeKey::new(
++            aead::UnboundKey::new(&aead::AES_256_GCM, &key)
++                .map_err(|_| "Could not set up the sign-in cipher.".to_owned())?,
++        );
++        let plain = key
++            .open_in_place(
++                aead::Nonce::assume_unique_for_key(nonce),
++                aead::Aad::from(&MAGIC[..]),
++                &mut body,
++            )
++            .map_err(|_| {
++                "Could not unlock the saved sign-in (wrong PIN, or the storage was reset). Sign in again."
++                    .to_owned()
++            })?;
++        String::from_utf8(plain.to_vec())
++            .map_err(|_| "The saved sign-in is corrupted. Sign in again.".to_owned())
++    }
++}
++
++impl SecretStore for EncryptedStore {
++    fn get(&self, key: &str) -> Result<Option<String>, String> {
++        if key != STORE_KEY {
++            return Ok(None);
++        }
++        match fs::read(&self.file) {
++            Ok(bytes) => self.decrypt(&bytes).map(Some),
++            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
++            Err(e) => Err(format!("Could not read the saved sign-in: {e}")),
++        }
++    }
++    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
++        if key != STORE_KEY {
++            return Err("This store keeps one account.".into());
++        }
++        let bytes = self.encrypt(secret)?;
++        write_atomic(&self.file, &bytes)
++    }
++    fn delete(&self, key: &str) -> Result<(), String> {
++        if key != STORE_KEY {
++            return Ok(());
++        }
++        match fs::remove_file(&self.file) {
++            Ok(()) => Ok(()),
++            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
++            Err(e) => Err(format!("Could not remove the saved sign-in: {e}")),
++        }
++    }
++    fn persistent(&self) -> bool {
++        true
++    }
++}
++
++fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
++    if let Some(dir) = path.parent() {
++        fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
++    }
++    let mut options = fs::OpenOptions::new();
++    options.write(true).create(true).truncate(true);
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::OpenOptionsExt as _;
++        options.mode(0o600);
++    }
++    let mut file = options
++        .open(path)
++        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
++    file.write_all(bytes)
++        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
++    let _ = file.sync_all();
++    Ok(())
++}
++
++fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
++    let temp = path.with_extension("tmp");
++    write_private(&temp, bytes)?;
++    if fs::rename(&temp, path).is_ok() {
++        return Ok(());
++    }
++    // FAT file systems refuse to replace an existing name.
++    let _ = fs::remove_file(path);
++    if fs::rename(&temp, path).is_ok() {
++        return Ok(());
++    }
++    // Last resort for file systems without rename: write the final name.
++    let result = write_private(path, bytes);
++    let _ = fs::remove_file(&temp);
++    result
++}
++
++fn load_or_create_device_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
++    let path = dir.join(DEVICE_KEY_FILE);
++    match fs::read(&path) {
++        Ok(bytes) if bytes.len() == KEY_LEN => Ok(bytes.try_into().expect("length checked")),
++        Ok(_) => {
++            Err("The device key file is damaged. Remove the auth folder and sign in again.".into())
++        }
++        Err(e) if e.kind() == io::ErrorKind::NotFound => {
++            let mut key = [0u8; KEY_LEN];
++            SystemRandom::new()
++                .fill(&mut key)
++                .map_err(|_| "No system randomness for the device key.".to_owned())?;
++            write_private(&path, &key)?;
++            Ok(key)
++        }
++        Err(e) => Err(format!("Could not read the device key: {e}")),
++    }
++}
++
++/// The store the launcher should use. With a non-empty PIN the refresh token is
++/// encrypted under [`AUTH_DIR`]; without one (or if the SD card refuses it) the
++/// session is memory-only and `persistent()` is false, so the UI shows
++/// [`NO_SECURE_STORAGE`]. It never falls back to a plain file.
++pub fn open_store(pin: Option<&str>) -> Box<dyn SecretStore> {
++    open_store_in(auth_dir(), pin)
++}
++
++/// [`open_store`] with an explicit folder (tests, desktop development).
++pub fn open_store_in(dir: impl AsRef<Path>, pin: Option<&str>) -> Box<dyn SecretStore> {
++    let Some(pin) = pin.map(str::trim).filter(|pin| !pin.is_empty()) else {
++        return Box::<MemoryStore>::default();
++    };
++    match EncryptedStore::new(dir, pin) {
++        Ok(store) => Box::new(store),
++        Err(_) => Box::<MemoryStore>::default(),
++    }
++}
++
++/// Saves the refresh token and the Minecraft token, encrypted by the store.
++/// Without a persistent store the data still goes to memory for this run.
++pub fn save(store: &dyn SecretStore, signed: &SignedIn) -> Result<(), String> {
++    let record = SavedRecord {
++        account: signed.account.clone(),
++        secrets: signed.secrets.clone(),
++    };
++    let text =
++        serde_json::to_string(&record).map_err(|_| "Could not encode the account.".to_owned())?;
++    store.set(STORE_KEY, &text)
++}
++
++fn refresh_saved(endpoints: &Endpoints, signed: SignedIn) -> Result<SignedIn, String> {
++    let client_id = if signed.secrets.client_id.is_empty() {
++        client_id().ok_or_else(|| NOT_CONFIGURED.to_owned())?
++    } else {
++        signed.secrets.client_id.clone()
++    };
++    let ms = refresh_ms(endpoints, &client_id, &signed.secrets.refresh_token)?;
++    let (account, secrets) = finish_sign_in(endpoints, ms, &client_id)?;
++    if account.uuid != signed.account.uuid {
++        return Err(
++            "The Microsoft account now has another Minecraft profile. Sign in again.".into(),
++        );
++    }
++    Ok(SignedIn { account, secrets })
++}
++
++/// Loads the saved account, renews the Minecraft token if it has less than an
++/// hour left, installs it with [`super::set_current`] and returns its public
++/// data. `Ok(None)` means nothing was saved. A refused refresh token (`invalid
++/// grant`) removes the dead record and asks for a new sign-in.
++pub fn load_saved(store: &dyn SecretStore) -> Result<Option<SignedIn>, String> {
++    load_saved_at(store, Endpoints::live())
++}
++
++/// [`load_saved`] against explicit endpoints (harnesses and tests).
++pub fn load_saved_at(
++    store: &dyn SecretStore,
++    endpoints: Endpoints,
++) -> Result<Option<SignedIn>, String> {
++    let Some(text) = store.get(STORE_KEY)? else {
++        return Ok(None);
++    };
++    let record: SavedRecord = serde_json::from_str(&text)
++        .map_err(|_| "The saved sign-in is unreadable. Sign in again.".to_owned())?;
++    if parse_uuid(&record.account.uuid).is_none() {
++        return Err("The saved sign-in has an invalid profile. Sign in again.".into());
++    }
++    let mut signed = SignedIn {
++        account: record.account,
++        secrets: record.secrets,
++    };
++    if signed.secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
++        match refresh_saved(&endpoints, signed.clone()) {
++            Ok(renewed) => {
++                signed = renewed;
++                // A failed write must not throw the player out of the session;
++                // the token is still good for this run.
++                let _ = save(store, &signed);
++            }
++            Err(e) => {
++                if e == SIGN_IN_AGAIN {
++                    let _ = store.delete(STORE_KEY);
++                }
++                return Err(e);
++            }
++        }
++    }
++    install(&signed.account, &signed.secrets.minecraft_token)?;
++    Ok(Some(signed))
++}
++
++/// Signs out: clears [`super::current`] at once and removes the encrypted
++/// record. Play continues offline with the next world opened.
++pub fn sign_out(store: &dyn SecretStore) -> Result<(), String> {
++    clear_current();
++    store.delete(STORE_KEY)
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/horizon-client/src/auth/login/tests.rs b/crates/horizon-client/src/auth/login/tests.rs
+new file mode 100644
+index 0000000..b413d8e
+--- /dev/null
++++ b/crates/horizon-client/src/auth/login/tests.rs
+@@ -0,0 +1,779 @@
++//! The whole sign-in chain against a local mock of the Microsoft, Xbox Live
++//! and Minecraft endpoints (recorded response shapes, mock tokens only), the
++//! JSON parsers, and the encrypted store with an in-memory / temporary folder.
++//!
++//! No test uses a real account, a real client ID or the network beyond
++//! 127.0.0.1.
++use super::*;
++use std::{
++    io::{BufRead, BufReader, Read, Write},
++    net::TcpListener,
++    sync::{Arc, Mutex as StdMutex, MutexGuard},
++};
++
++const UUID: &str = "069a79f444e94726a5befca90e38aaf5";
++
++/// `auth::current` is global; tests that install or clear a session take turns.
++static GLOBAL_SESSION: StdMutex<()> = StdMutex::new(());
++
++fn serial() -> MutexGuard<'static, ()> {
++    GLOBAL_SESSION
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner())
++}
++
++fn temp_dir(name: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!(
++        "horizon-auth-{name}-{}-{}",
++        std::process::id(),
++        now()
++    ));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++#[derive(Clone, Debug)]
++struct Request {
++    #[allow(dead_code)]
++    method: String,
++    path: String,
++    #[allow(dead_code)]
++    auth: String,
++    #[allow(dead_code)]
++    body: String,
++}
++
++/// What the mock answers and what it was asked.
++#[derive(Default)]
++struct Mock {
++    /// Polls left before the token endpoint stops saying authorization_pending.
++    pending: usize,
++    /// Polls that say slow_down first.
++    slow_downs: usize,
++    xerr: Option<u64>,
++    owns_game: bool,
++    no_profile: bool,
++    refuse_app: bool,
++    revoke_refresh: bool,
++    log: Vec<Request>,
++}
++
++fn reply(status: u16, body: Value) -> (u16, String) {
++    (status, body.to_string())
++}
++
++fn percent_decode(text: &str) -> String {
++    let bytes = text.as_bytes();
++    let mut out = Vec::with_capacity(bytes.len());
++    let mut i = 0;
++    while i < bytes.len() {
++        match bytes[i] {
++            b'+' => {
++                out.push(b' ');
++                i += 1;
++            }
++            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&text[i + 1..i + 3], 16) {
++                Ok(byte) => {
++                    out.push(byte);
++                    i += 3;
++                }
++                Err(_) => {
++                    out.push(bytes[i]);
++                    i += 1;
++                }
++            },
++            byte => {
++                out.push(byte);
++                i += 1;
++            }
++        }
++    }
++    String::from_utf8_lossy(&out).into_owned()
++}
++
++fn form(body: &str, key: &str) -> Option<String> {
++    body.split('&')
++        .filter_map(|pair| pair.split_once('='))
++        .find(|(name, _)| *name == key)
++        .map(|(_, value)| percent_decode(value))
++}
++
++fn route(mock: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16, String) {
++    match (method, path) {
++        ("POST", "/ms/devicecode") => {
++            assert_eq!(form(body, "client_id").as_deref(), Some("test-client"));
++            assert_eq!(form(body, "scope").as_deref(), Some(SCOPE));
++            reply(
++                200,
++                json!({
++                    "user_code": "ABCD-EFGH",
++                    "device_code": "dev-1",
++                    "verification_uri": "https://www.microsoft.com/link",
++                    "expires_in": 900,
++                    "interval": 1,
++                }),
++            )
++        }
++        ("POST", "/ms/token") => match form(body, "grant_type").as_deref() {
++            Some("urn:ietf:params:oauth:grant-type:device_code") => {
++                if mock.slow_downs > 0 {
++                    mock.slow_downs -= 1;
++                    return reply(400, json!({"error": "slow_down"}));
++                }
++                if mock.pending > 0 {
++                    mock.pending -= 1;
++                    return reply(400, json!({"error": "authorization_pending"}));
++                }
++                assert_eq!(form(body, "device_code").as_deref(), Some("dev-1"));
++                assert_eq!(form(body, "client_id").as_deref(), Some("test-client"));
++                reply(
++                    200,
++                    json!({
++                        "access_token": "ms-access-1",
++                        "refresh_token": "ms-refresh-1",
++                        "expires_in": 3600,
++                    }),
++                )
++            }
++            Some("refresh_token") => {
++                if mock.revoke_refresh
++                    || form(body, "refresh_token").as_deref() != Some("ms-refresh-1")
++                {
++                    reply(400, json!({"error": "invalid_grant"}))
++                } else {
++                    reply(
++                        200,
++                        json!({
++                            "access_token": "ms-access-2",
++                            "refresh_token": "ms-refresh-2",
++                        }),
++                    )
++                }
++            }
++            _ => reply(400, json!({"error": "invalid_grant"})),
++        },
++        ("POST", "/xbl") => {
++            let value: Value = serde_json::from_str(body).unwrap();
++            assert!(
++                value["Properties"]["RpsTicket"]
++                    .as_str()
++                    .unwrap()
++                    .starts_with("d=ms-access-")
++            );
++            assert_eq!(value["RelyingParty"], "http://auth.xboxlive.com");
++            reply(
++                200,
++                json!({"Token": "xbl-token", "DisplayClaims": {"xui": [{"uhs": "uhs-1"}]}}),
++            )
++        }
++        ("POST", "/xsts") => {
++            let value: Value = serde_json::from_str(body).unwrap();
++            assert_eq!(value["Properties"]["UserTokens"][0], "xbl-token");
++            assert_eq!(value["RelyingParty"], "rp://api.minecraftservices.com/");
++            match mock.xerr {
++                Some(code) => reply(401, json!({"Identity": "0", "XErr": code, "Message": ""})),
++                None => reply(
++                    200,
++                    json!({
++                        "Token": "xsts-token",
++                        "DisplayClaims": {"xui": [{"uhs": "uhs-1", "xid": "2535400000000000"}]},
++                    }),
++                ),
++            }
++        }
++        ("POST", "/mc/authentication/login_with_xbox") => {
++            let value: Value = serde_json::from_str(body).unwrap();
++            assert_eq!(value["identityToken"], "XBL3.0 x=uhs-1;xsts-token");
++            if mock.refuse_app {
++                return reply(
++                    403,
++                    json!({"path": "/authentication/login_with_xbox", "errorType": "FORBIDDEN"}),
++                );
++            }
++            reply(
++                200,
++                json!({
++                    "username": "mock",
++                    "access_token": "mc-token",
++                    "token_type": "Bearer",
++                    "expires_in": 86400,
++                }),
++            )
++        }
++        ("GET", "/mc/entitlements/mcstore") => {
++            assert_eq!(auth, "Bearer mc-token");
++            let items = if mock.owns_game {
++                json!([
++                    {"name": "product_minecraft", "signature": "x"},
++                    {"name": "game_minecraft", "signature": "x"},
++                ])
++            } else {
++                json!([])
++            };
++            reply(200, json!({"items": items, "signature": "x", "keyId": "1"}))
++        }
++        ("GET", "/mc/minecraft/profile") if mock.no_profile => reply(
++            404,
++            json!({"path": "/minecraft/profile", "errorType": "NOT_FOUND", "error": "NOT_FOUND"}),
++        ),
++        ("GET", "/mc/minecraft/profile") => reply(
++            200,
++            json!({
++                "id": UUID,
++                "name": "Notch",
++                "skins": [{
++                    "id": "s1",
++                    "state": "ACTIVE",
++                    "url": "http://textures.minecraft.net/texture/abc",
++                    "variant": "SLIM",
++                }],
++                "capes": [
++                    {"id": "c1", "state": "INACTIVE", "url": "http://textures.minecraft.net/texture/cape1"},
++                    {"id": "c2", "state": "ACTIVE", "url": "http://textures.minecraft.net/texture/cape2"},
++                ],
++            }),
++        ),
++        _ => reply(404, json!({"error": "NotFound"})),
++    }
++}
++
++/// A one-thread HTTP/1.1 server: one request per connection.
++fn serve(mock: Arc<StdMutex<Mock>>) -> Endpoints {
++    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++    let base = format!("http://{}", listener.local_addr().unwrap());
++    std::thread::spawn(move || {
++        for stream in listener.incoming() {
++            let Ok(mut stream) = stream else { continue };
++            let mut reader = BufReader::new(stream.try_clone().unwrap());
++            let mut line = String::new();
++            if reader.read_line(&mut line).is_err() {
++                continue;
++            }
++            let mut parts = line.split_whitespace();
++            let (method, path) = (
++                parts.next().unwrap_or("").to_owned(),
++                parts.next().unwrap_or("").to_owned(),
++            );
++            let (mut length, mut auth) = (0, String::new());
++            loop {
++                let mut header = String::new();
++                reader.read_line(&mut header).unwrap();
++                let header = header.trim_end();
++                if header.is_empty() {
++                    break;
++                }
++                let (key, value) = header.split_once(':').unwrap();
++                match key.to_ascii_lowercase().as_str() {
++                    "content-length" => length = value.trim().parse().unwrap(),
++                    "authorization" => auth = value.trim().to_owned(),
++                    _ => {}
++                }
++            }
++            let mut body = vec![0; length];
++            reader.read_exact(&mut body).unwrap();
++            let body = String::from_utf8(body).unwrap();
++            let (status, text) = {
++                let mut mock = mock.lock().unwrap();
++                mock.log.push(Request {
++                    method: method.clone(),
++                    path: path.clone(),
++                    auth: auth.clone(),
++                    body: body.clone(),
++                });
++                route(&mut mock, &method, &path, &auth, &body)
++            };
++            let _ = write!(
++                stream,
++                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
++                text.len()
++            );
++        }
++    });
++    Endpoints {
++        microsoft: format!("{base}/ms"),
++        xbox_user: format!("{base}/xbl"),
++        xsts: format!("{base}/xsts"),
++        minecraft: format!("{base}/mc"),
++    }
++}
++
++fn mock(configure: impl FnOnce(&mut Mock)) -> (Arc<StdMutex<Mock>>, Endpoints) {
++    let mut mock = Mock {
++        owns_game: true,
++        ..Default::default()
++    };
++    configure(&mut mock);
++    let mock = Arc::new(StdMutex::new(mock));
++    let endpoints = serve(mock.clone());
++    (mock, endpoints)
++}
++
++fn paths(mock: &Arc<StdMutex<Mock>>) -> Vec<String> {
++    mock.lock()
++        .unwrap()
++        .log
++        .iter()
++        .map(|request| request.path.clone())
++        .collect()
++}
++
++fn authorized(mut flow: LoginFlow) -> LoginFlow {
++    assert_eq!(poll(&mut flow).unwrap(), Poll::Authorized);
++    flow
++}
++
++fn sample_account() -> Account {
++    Account {
++        uuid: UUID.into(),
++        name: "Notch".into(),
++        xuid: Some("2535400000000000".into()),
++        skin_url: Some("http://textures.minecraft.net/texture/abc".into()),
++        skin_variant: Some("slim".into()),
++        cape_url: Some("http://textures.minecraft.net/texture/cape2".into()),
++    }
++}
++
++fn sample_secrets(expires_at: u64) -> Secrets {
++    Secrets {
++        client_id: "test-client".into(),
++        refresh_token: "ms-refresh-1".into(),
++        minecraft_token: "old".into(),
++        minecraft_expires_at: expires_at,
++        xuid: Some("2535400000000000".into()),
++    }
++}
++
++// ----- Configuration -----------------------------------------------------------------------------
++
++#[test]
++fn client_id_sources_in_order() {
++    assert_eq!(
++        pick_client_id(
++            Some(" runtime ".into()),
++            Some("file".into()),
++            Some("built".into())
++        )
++        .as_deref(),
++        Some("runtime")
++    );
++    assert_eq!(
++        pick_client_id(
++            Some("  ".into()),
++            Some(" file ".into()),
++            Some("built".into())
++        )
++        .as_deref(),
++        Some("file")
++    );
++    assert_eq!(
++        pick_client_id(Some("  ".into()), Some("\n".into()), Some("built".into())).as_deref(),
++        Some("built")
++    );
++    assert_eq!(pick_client_id(None, None, None), None);
++    assert_eq!(
++        pick_client_id(Some(String::new()), Some("  ".into()), None),
++        None
++    );
++
++    let dir = temp_dir("client-id");
++    let path = dir.join("msa-client-id.txt");
++    fs::write(
++        &path,
++        "# Horizon's Azure application\n\n  00000000-1111-2222-3333-444444444444  \n",
++    )
++    .unwrap();
++    assert_eq!(
++        read_client_id_file(&path).as_deref(),
++        Some("00000000-1111-2222-3333-444444444444")
++    );
++    fs::write(&path, "# nothing here\n").unwrap();
++    assert_eq!(read_client_id_file(&path), None);
++    assert_eq!(read_client_id_file(&dir.join("missing.txt")), None);
++    let _ = fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn an_unconfigured_client_id_never_touches_the_network() {
++    let (mock, endpoints) = mock(|_| {});
++    assert_eq!(
++        begin_device_code_at(endpoints, "  ").unwrap_err(),
++        NOT_CONFIGURED
++    );
++    assert!(paths(&mock).is_empty());
++}
++
++#[test]
++fn transport_errors_name_the_service_only() {
++    let endpoints = Endpoints {
++        microsoft: "http://127.0.0.1:9/ms".into(),
++        ..Endpoints::live()
++    };
++    assert_eq!(
++        begin_device_code_at(endpoints, "test-client").unwrap_err(),
++        "Could not reach Microsoft. Check your internet connection."
++    );
++}
++
++// ----- The device-code flow ----------------------------------------------------------------------
++
++#[test]
++fn device_code_poll_and_the_whole_chain() {
++    let _guard = serial();
++    clear_current();
++    let (mock, endpoints) = mock(|mock| {
++        mock.slow_downs = 1;
++        mock.pending = 1;
++    });
++    let mut flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert_eq!(
++        (
++            flow.device.user_code.as_str(),
++            flow.device.verification_uri.as_str(),
++            flow.device.interval,
++        ),
++        ("ABCD-EFGH", "https://www.microsoft.com/link", 1)
++    );
++    // The device code itself is a secret: never in Debug.
++    assert!(!format!("{flow:?}").contains("dev-1"));
++
++    assert_eq!(poll(&mut flow).unwrap(), Poll::SlowDown);
++    assert_eq!(poll(&mut flow).unwrap(), Poll::Pending);
++    assert_eq!(poll(&mut flow).unwrap(), Poll::Authorized);
++    // Polling after approval is local and idempotent.
++    let before = paths(&mock).len();
++    assert_eq!(poll(&mut flow).unwrap(), Poll::Authorized);
++    assert_eq!(paths(&mock).len(), before);
++
++    let signed = complete(flow).unwrap();
++    assert_eq!(signed.account, sample_account());
++    let current = super::super::current().unwrap();
++    assert_eq!(
++        (current.name.as_str(), current.uuid, current.xuid.as_deref()),
++        (
++            "Notch",
++            0x069a79f444e94726a5befca90e38aaf5,
++            Some("2535400000000000")
++        )
++    );
++    assert_eq!(
++        paths(&mock),
++        [
++            "/ms/devicecode",
++            "/ms/token",
++            "/ms/token",
++            "/ms/token",
++            "/xbl",
++            "/xsts",
++            "/mc/authentication/login_with_xbox",
++            "/mc/entitlements/mcstore",
++            "/mc/minecraft/profile",
++        ]
++    );
++    // Neither the debug output nor the public account carries a token.
++    let debug = format!("{signed:?}");
++    assert!(!debug.contains("ms-refresh-1") && !debug.contains("mc-token"));
++    let json = serde_json::to_string(&signed.account).unwrap();
++    assert!(!json.contains("token"));
++    clear_current();
++}
++
++#[test]
++fn complete_before_approval_is_refused() {
++    let (_, endpoints) = mock(|_| {});
++    let flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert_eq!(
++        complete(flow).unwrap_err(),
++        "The Microsoft sign-in has not been approved yet."
++    );
++}
++
++#[test]
++fn oauth_and_device_code_errors_have_messages() {
++    assert_eq!(
++        parse_device_code(200, &json!({"user_code": "A"})).unwrap_err(),
++        "Microsoft did not return a sign-in code."
++    );
++    assert_eq!(
++        parse_device_code(400, &json!({"error": "invalid_client"})).unwrap_err(),
++        "Microsoft refused this launcher's app registration (client ID)."
++    );
++    assert_eq!(
++        parse_ms_tokens(400, &json!({"error": "authorization_declined"})).unwrap_err(),
++        "Sign-in was declined in the browser."
++    );
++    assert_eq!(
++        parse_ms_tokens(400, &json!({"error": "expired_token"})).unwrap_err(),
++        "The sign-in code expired. Start again."
++    );
++    assert_eq!(
++        parse_ms_tokens(400, &json!({"error": "bad_verification_code"})).unwrap_err(),
++        "The sign-in code was not recognised. Start again."
++    );
++    assert_eq!(
++        parse_ms_tokens(400, &json!({"error": "invalid_grant"})).unwrap_err(),
++        SIGN_IN_AGAIN
++    );
++    assert_eq!(
++        parse_ms_tokens(200, &json!({"access_token": "a"})).unwrap_err(),
++        "Microsoft did not return a refresh token. Sign in again."
++    );
++    assert!(
++        parse_ms_tokens(500, &json!({"error": "server_error"}))
++            .unwrap_err()
++            .contains("server_error")
++    );
++}
++
++#[test]
++fn xsts_errors_map_to_advice() {
++    assert!(xsts_error(2148916233).contains("no Xbox profile"));
++    assert!(xsts_error(2148916235).contains("not available in your country"));
++    assert!(xsts_error(2148916236).contains("adult verification"));
++    assert!(xsts_error(2148916237).contains("adult verification"));
++    assert!(xsts_error(2148916238).contains("child account"));
++    assert!(xsts_error(999).contains("error 999"));
++}
++
++#[test]
++fn sign_in_refusals_have_messages() {
++    let (_, endpoints) = mock(|mock| mock.owns_game = false);
++    let flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert_eq!(complete(authorized(flow)).unwrap_err(), OWNS);
++
++    let (_, endpoints) = mock(|mock| mock.no_profile = true);
++    let flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert_eq!(complete(authorized(flow)).unwrap_err(), NO_PROFILE);
++
++    let (_, endpoints) = mock(|mock| mock.refuse_app = true);
++    let flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert!(
++        complete(authorized(flow))
++            .unwrap_err()
++            .contains("not approved by Mojang")
++    );
++
++    let (_, endpoints) = mock(|mock| mock.xerr = Some(2148916233));
++    let flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert!(
++        complete(authorized(flow))
++            .unwrap_err()
++            .contains("no Xbox profile")
++    );
++
++    let (_, endpoints) = mock(|mock| mock.xerr = Some(2148916238));
++    let flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert!(
++        complete(authorized(flow))
++            .unwrap_err()
++            .contains("child account")
++    );
++}
++
++#[test]
++fn cancelling_stops_the_wait() {
++    let (_, endpoints) = mock(|mock| mock.pending = 100);
++    let mut flow = begin_device_code_at(endpoints, "test-client").unwrap();
++    assert_eq!(
++        wait_for_sign_in(&mut flow, &|| true).unwrap_err(),
++        "Sign-in cancelled."
++    );
++}
++
++// ----- Parsing -----------------------------------------------------------------------------------
++
++#[test]
++fn profile_and_entitlements_parse() {
++    let profile = json!({
++        "id": "069a79f4-44e9-4726-a5be-fca90e38aaf5",
++        "name": "Notch",
++        "skins": [{"state": "ACTIVE", "url": "https://x/skin", "variant": "SLIM"}],
++        "capes": [
++            {"state": "INACTIVE", "url": "https://x/old"},
++            {"state": "ACTIVE", "url": "https://x/cape"},
++        ],
++    });
++    let account = parse_profile(&profile).unwrap();
++    assert_eq!(account.uuid, UUID);
++    assert_eq!(account.name, "Notch");
++    assert_eq!(account.skin_url.as_deref(), Some("https://x/skin"));
++    assert_eq!(account.skin_variant.as_deref(), Some("slim"));
++    assert_eq!(account.cape_url.as_deref(), Some("https://x/cape"));
++    assert!(parse_profile(&json!({"name": "NoId"})).is_err());
++    assert!(parse_profile(&json!({"id": "nope", "name": "N"})).is_err());
++
++    assert!(parse_entitlements(
++        &json!({"items": [{"name": "product_minecraft"}]})
++    ));
++    assert!(parse_entitlements(
++        &json!({"items": [{"name": "game_minecraft"}]})
++    ));
++    assert!(!parse_entitlements(&json!({"items": []})));
++    assert!(!parse_entitlements(&json!({})));
++}
++
++// ----- Saved accounts ----------------------------------------------------------------------------
++
++#[test]
++fn encrypted_store_round_trip_and_wrong_pin() {
++    let dir = temp_dir("encrypted");
++    let signed = SignedIn {
++        account: sample_account(),
++        secrets: sample_secrets(now() + 7200),
++    };
++    let store = EncryptedStore::new(&dir, "1234").unwrap();
++    assert!(store.persistent());
++    save(&store, &signed).unwrap();
++
++    let bytes = fs::read(dir.join(AUTH_FILE)).unwrap();
++    for secret in ["ms-refresh-1", "mc-token", "Notch"] {
++        assert!(
++            !bytes
++                .windows(secret.len())
++                .any(|window| window == secret.as_bytes()),
++            "{secret} must not be readable on the SD card"
++        );
++    }
++    assert!(!store.get(STORE_KEY).unwrap().unwrap().is_empty());
++
++    // The same PIN and device key open it.
++    let reopened = EncryptedStore::new(&dir, "1234").unwrap();
++    let text = reopened.get(STORE_KEY).unwrap().unwrap();
++    let record: SavedRecord = serde_json::from_str(&text).unwrap();
++    assert_eq!(record.account, sample_account());
++    assert_eq!(record.secrets.refresh_token, "ms-refresh-1");
++
++    // Another PIN (or a record from another install) is refused, not ignored.
++    let wrong = EncryptedStore::new(&dir, "9999").unwrap();
++    assert!(wrong.get(STORE_KEY).unwrap_err().contains("wrong PIN"));
++
++    // No PIN means memory only, with the warning the UI shows.
++    let memory = open_store_in(&dir, None);
++    assert!(!memory.persistent());
++    assert!(NO_SECURE_STORAGE.contains("No PIN"));
++    let _ = fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn load_saved_reuses_a_good_token_and_refreshes_an_old_one() {
++    let _guard = serial();
++    clear_current();
++    let store = MemoryStore::default();
++    let account = sample_account();
++
++    save(
++        &store,
++        &SignedIn {
++            account: account.clone(),
++            secrets: sample_secrets(now() + 7200),
++        },
++    )
++    .unwrap();
++    let (first_mock, endpoints) = mock(|_| {});
++    let loaded = load_saved_at(&store, endpoints.clone()).unwrap().unwrap();
++    assert_eq!(loaded.secrets.minecraft_token, "old");
++    assert_eq!(
++        super::super::current().map(|session| session.name.clone()),
++        Some("Notch".into())
++    );
++    assert!(
++        paths(&first_mock).is_empty(),
++        "a fresh token needs no request"
++    );
++
++    save(
++        &store,
++        &SignedIn {
++            account,
++            secrets: sample_secrets(0),
++        },
++    )
++    .unwrap();
++    let loaded = load_saved_at(&store, endpoints).unwrap().unwrap();
++    assert_eq!(loaded.secrets.minecraft_token, "mc-token");
++    assert_eq!(loaded.secrets.refresh_token, "ms-refresh-2");
++    assert_eq!(
++        paths(&first_mock),
++        [
++            "/ms/token",
++            "/xbl",
++            "/xsts",
++            "/mc/authentication/login_with_xbox",
++            "/mc/entitlements/mcstore",
++            "/mc/minecraft/profile",
++        ]
++    );
++
++    // The renewed record was written back: a second load needs no request.
++    let (quiet, endpoints) = mock(|_| {});
++    let again = load_saved_at(&store, endpoints).unwrap().unwrap();
++    assert_eq!(again.secrets.minecraft_token, "mc-token");
++    assert!(paths(&quiet).is_empty());
++    clear_current();
++}
++
++#[test]
++fn a_revoked_refresh_token_asks_for_a_new_sign_in() {
++    let _guard = serial();
++    clear_current();
++    let store = MemoryStore::default();
++    save(
++        &store,
++        &SignedIn {
++            account: sample_account(),
++            secrets: Secrets {
++                refresh_token: "revoked".into(),
++                ..sample_secrets(0)
++            },
++        },
++    )
++    .unwrap();
++    let (_, endpoints) = mock(|_| {});
++    assert_eq!(load_saved_at(&store, endpoints).unwrap_err(), SIGN_IN_AGAIN);
++    assert_eq!(store.get(STORE_KEY).unwrap(), None);
++    assert!(super::super::current().is_none());
++}
++
++#[test]
++fn sign_out_clears_the_session_and_the_file() {
++    let _guard = serial();
++    let dir = temp_dir("sign-out");
++    let store = EncryptedStore::new(&dir, "1234").unwrap();
++    let signed = SignedIn {
++        account: sample_account(),
++        secrets: sample_secrets(now() + 7200),
++    };
++    save(&store, &signed).unwrap();
++    load_saved_at(&store, Endpoints::live()).unwrap();
++    assert!(super::super::current().is_some());
++    sign_out(&store).unwrap();
++    assert!(super::super::current().is_none());
++    assert_eq!(store.get(STORE_KEY).unwrap(), None);
++    assert!(!dir.join(AUTH_FILE).exists());
++    let _ = fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn no_saved_account_is_not_an_error() {
++    let _guard = serial();
++    clear_current();
++    let store = MemoryStore::default();
++    let (mock, endpoints) = mock(|_| {});
++    assert!(load_saved_at(&store, endpoints).unwrap().is_none());
++    assert!(paths(&mock).is_empty());
++    assert!(super::super::current().is_none());
++}
++
++#[test]
++fn current_can_change_after_start_and_be_cleared() {
++    let _guard = serial();
++    clear_current();
++    assert!(super::super::current().is_none());
++    super::super::set_current(AuthSession::new("First", 1, "token-one"));
++    super::super::set_current(AuthSession::new("Second", 2, "token-two"));
++    let current = super::super::current().unwrap();
++    assert_eq!((current.name.as_str(), current.uuid), ("Second", 2));
++    assert!(!format!("{current:?}").contains("token-two"));
++    super::super::clear_current();
++    assert!(super::super::current().is_none());
++}
