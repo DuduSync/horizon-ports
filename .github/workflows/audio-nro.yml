@@ -1,0 +1,86 @@
+name: switch-audio-nro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Clone sources
+        run: |
+          set -eux
+          git clone --depth 1 --branch v0.1.1 https://github.com/MakrSas/horizon-switch.git makrsas
+          git clone --depth 1 https://github.com/tarkodev/horizon-switch.git tarkodev
+          cp -a tarkodev/switch/vendor/cpal makrsas/switch/vendor/cpal
+
+      - name: Patch audio
+        run: |
+          set -eux
+          cd makrsas
+          printf '\n[patch.crates-io]\ncpal = { path = "switch/vendor/cpal" }\n' >> switch/cargo-config.toml
+          sed -i 's/--no-default-features --bin horizon-client/--no-default-features --features audio --bin horizon-client/' switch/scripts/build.sh
+          grep -n 'features audio' switch/scripts/build.sh
+          tail -5 switch/cargo-config.toml
+
+      - name: Build NVK
+        run: |
+          set -eux
+          cd makrsas
+          switch/scripts/build-nvk.sh
+          ls -lh switch/build/nvk/lib/libvulkan_bh.a
+
+      - name: Prune Docker
+        run: |
+          docker system prune -af --volumes || true
+          df -h
+
+      - name: Build toolchain image
+        run: |
+          set -eux
+          sed -i '/test "\$(dkp-pacman -Q/d' tarkodev/switch/Containerfile
+          docker build -t horizon-build -f tarkodev/switch/Containerfile tarkodev/switch
+
+      - name: Build Horizon with audio
+        run: |
+          set -eux
+          docker run --rm \
+            -v "$PWD/makrsas:/work" \
+            -w /work \
+            horizon-build \
+            bash -lc 'dkp-pacman -S --noconfirm switch-mesa switch-libdrm_nouveau switch-libexpat switch-libzstd switch-zlib && RUST_TOOLCHAIN=nightly-2026-10-04 switch/scripts/build.sh'
+
+      - name: Package NRO
+        run: |
+          set -eux
+          mkdir -p out
+          docker run --rm -v "$PWD/makrsas:/work" -v "$PWD/out:/out" -w /work horizon-build bash -lc '
+            nacptool --create "Horizon Audio" "Horizon contributors" "0.1.1-audio" /tmp/horizon.nacp --titleid=0100485952450000
+            elf2nro switch/build/horizon.elf /out/Horizon-audio.nro --icon=switch/icon.jpg --nacp=/tmp/horizon.nacp
+          '
+          ls -lh out
+          sha256sum out/Horizon-audio.nro
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Horizon-audio-nro
+          path: out/Horizon-audio.nro
