@@ -20,6 +20,18 @@ Horizon (Minecraft: Java Edition 26.3 in Rust) has already been ported to the Ni
 - NVK built once with Docker/Podman (~20 GB disk) via `switch/scripts/build-nvk.sh`.
 - NSP packaging with hacbrewpack plus the console's `prod.keys`.
 
+## ARM64 is not the same as Switch
+
+Horizon builds and runs on desktop ARM64: Apple Silicon and Windows on ARM (`aarch64-pc-windows-msvc`). That proves the CPU architecture, game logic, math and much of the renderer are clean on AArch64. It does not prove a Switch or Android port.
+
+What desktop ARM64 does **not** provide:
+
+- Windows ARM64 uses Win32/MSVC, DirectX 12 or Vulkan and PC drivers. Switch uses Horizon OS, newlib, libnx, NVK/mesa-switch and NSP packaging.
+- The Switch port needed a custom Rust target, a patched `rust-src`/`-Z build-std`, patched `libc`/`winit`/`wgpu` crates and `nxshim.c`. None of that exists in the Windows build.
+- Audio, input, storage and packaging are new platform layers on every target.
+
+Android benefits more from the ARM64 work: it is ARM64, Linux, bionic and Vulkan. The remaining work is the Android platform layer (NDK, `android-activity`, JNI, lifecycle, touch, storage). For Switch, the real shortcut is the existing `MakrSas/horizon-switch` port, not the Windows ARM64 build.
+
 ## Why this is easier than Roblox NX
 
 Horizon is source-available Rust with portable crates. A port adapts the platform layer: target, libc gaps, window/input, GPU backend, storage, packaging.
