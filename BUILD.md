@@ -38,7 +38,7 @@ Build run `44518820144` (audio + launcher + auth + account UI):
 
 - `Horizon-full.nro` — 53,109,580 bytes, SHA-256 `65315b7c620f262255ff14dd9d69f65f0f96b7ed8788af2881c645fc142b0b81`.
 - `horizon.elf` — SHA-256 `bc9010f055f209fb621f8a8fe2c35eb8093b5d91f014f76666405a36cf9cfaf0`.
-- The NSP is packaged locally from the ELF and the console's `prod.keys`; it is not committed.
+- `Horizon-full.nsp` — 28,710,104 bytes, SHA-256 `c7665ed789c13d8ab93dc62985c7467d31bad0df6f3e932d7223078147a18fc7`, packaged locally from the ELF and the console's `prod.keys` and uploaded to `/switch/Horizon-full.nsp`. The key was deleted after packaging and is not in this repository.
 
 ## Status
 
