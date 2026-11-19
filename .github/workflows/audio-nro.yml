@@ -37,7 +37,7 @@ jobs:
         run: |
           set -eux
           cd makrsas
-          printf '\n[patch.crates-io]\ncpal = { path = "switch/vendor/cpal" }\n' >> switch/cargo-config.toml
+          printf '\n[patch.crates-io]\ncpal = { path = "@SWITCH_DIR@/vendor/cpal" }\n' >> switch/cargo-config.toml
           sed -i 's/--no-default-features --bin horizon-client/--no-default-features --features audio --bin horizon-client/' switch/scripts/build.sh
           grep -n 'features audio' switch/scripts/build.sh
           tail -5 switch/cargo-config.toml
