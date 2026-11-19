@@ -33,12 +33,13 @@ jobs:
           mkdir -p makrsas/switch/vendor
           cp -a tarkodev/switch/vendor/cpal makrsas/switch/vendor/cpal
 
-      - name: Apply launcher and auth patches
+      - name: Apply launcher, auth and account UI patches
         run: |
           set -eux
           cd makrsas
           git apply ../patches/launcher-mvp.patch
           git apply ../patches/auth-msa.patch
+          git apply ../patches/account-ui.patch
           printf '\n[patch.crates-io]\ncpal = { path = "@SWITCH_DIR@/vendor/cpal" }\n' >> switch/cargo-config.toml
           sed -i 's/--no-default-features --bin horizon-client/--no-default-features --features audio --bin horizon-client/' switch/scripts/build.sh
           grep -n 'features audio' switch/scripts/build.sh
@@ -93,8 +94,14 @@ jobs:
           ls -lh out
           sha256sum out/Horizon-full.nro
 
-      - name: Upload
+      - name: Upload NRO
         uses: actions/upload-artifact@v4
         with:
           name: Horizon-full-nro
           path: out/Horizon-full.nro
+
+      - name: Upload ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: Horizon-full-elf
+          path: makrsas/switch/build/horizon.elf

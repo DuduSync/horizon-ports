@@ -1,0 +1,1327 @@
+diff --git a/crates/horizon-client/src/account_ui.rs b/crates/horizon-client/src/account_ui.rs
+new file mode 100644
+index 0000000..fe04bf0
+--- /dev/null
++++ b/crates/horizon-client/src/account_ui.rs
+@@ -0,0 +1,478 @@
++//! The launcher's Account screen state: the Microsoft device-code flow runs on
++//! a worker thread, so the title screen keeps drawing and taking input while
++//! Microsoft, Xbox Live and the Minecraft services answer.
++//!
++//! No token reaches this module's `Debug`, the UI strings or a log line. When
++//! the flow finishes, [`crate::auth::complete`] installs the session with
++//! `set_current`; the screen only keeps the public name/UUID.
++use crate::auth::{self, Account, Poll};
++use std::{
++    sync::{
++        Arc,
++        atomic::{AtomicBool, Ordering},
++        mpsc::{self, Receiver, Sender, TryRecvError},
++    },
++    time::{Duration, Instant},
++};
++
++/// What the screen is showing.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum Phase {
++    /// No session: offline play and the sign-in buttons.
++    #[default]
++    SignedOut,
++    /// Asking Microsoft for a device code.
++    Starting,
++    /// The code is on screen and the worker polls Microsoft.
++    Waiting,
++    /// Approved: Xbox Live, XSTS, Minecraft, entitlements and profile.
++    Completing,
++    /// A session is installed.
++    SignedIn,
++    /// The player cancelled, or the code was declined/expired.
++    Cancelled,
++    /// Anything that is not a plain cancellation.
++    Failed,
++}
++
++/// Worker -> UI messages. No tokens, no device code secret.
++#[derive(Clone, Debug)]
++pub enum Event {
++    Code {
++        user_code: String,
++        verification_uri: String,
++    },
++    Completing,
++    SignedIn {
++        account: Account,
++        persistent: bool,
++        save_error: Option<String>,
++    },
++    Cancelled,
++    Error(String),
++}
++
++/// The Account screen's state. `Title` owns one for the process.
++#[derive(Default)]
++pub struct AccountUi {
++    pub phase: Phase,
++    /// The code the player types at Microsoft's page.
++    pub user_code: String,
++    pub verification_uri: String,
++    /// A failure, shown in red. Never contains a token.
++    pub error: Option<String>,
++    /// A non-fatal warning: memory-only session, save failure, sign-out without
++    /// the PIN that would remove the encrypted record.
++    pub notice: Option<String>,
++    pub account_name: String,
++    pub account_uuid: String,
++    /// `Some(false)` means the session is memory-only.
++    pub persistent: Option<bool>,
++    /// The vault PIN, empty for memory-only. It is typed with the existing OSK.
++    pub pin: String,
++    pub pin_focused: bool,
++    receiver: Option<Receiver<Event>>,
++    cancel: Option<Arc<AtomicBool>>,
++}
++
++impl AccountUi {
++    pub fn is_busy(&self) -> bool {
++        matches!(
++            self.phase,
++            Phase::Starting | Phase::Waiting | Phase::Completing
++        )
++    }
++
++    /// Called when the dashboard opens the screen. A running flow is kept; an
++    /// idle screen re-reads `auth::current`, so a session installed by another
++    /// path (or a previous screen visit) shows up.
++    pub fn open(&mut self) {
++        self.pin_focused = false;
++        if self.is_busy() {
++            return;
++        }
++        self.refresh_from_current();
++        if self.phase != Phase::SignedIn {
++            self.phase = Phase::SignedOut;
++        }
++        self.error = None;
++        self.notice = None;
++    }
++
++    /// Update the public account from the process-wide session.
++    pub fn refresh_from_current(&mut self) {
++        match auth::current() {
++            Some(session) => {
++                self.phase = Phase::SignedIn;
++                self.account_name = session.name.clone();
++                self.account_uuid = horizon_protocol::crypto::uuid_string(session.uuid);
++            }
++            None => {
++                if self.phase == Phase::SignedIn {
++                    self.phase = Phase::SignedOut;
++                    self.account_name.clear();
++                    self.account_uuid.clear();
++                    self.persistent = None;
++                }
++            }
++        }
++    }
++
++    /// Begin the device-code flow. Returns false when the button should not
++    /// have been active or the worker could not start.
++    pub fn start_sign_in(&mut self) -> bool {
++        if self.is_busy() || self.phase == Phase::SignedIn {
++            return false;
++        }
++        let pin = self.pin.trim().to_owned();
++        let (sender, receiver) = mpsc::channel();
++        let cancel = Arc::new(AtomicBool::new(false));
++        let worker_cancel = cancel.clone();
++        let spawned = std::thread::Builder::new()
++            .name("Microsoft sign-in".into())
++            .spawn(move || sign_in_worker(sender, worker_cancel, pin));
++        match spawned {
++            Ok(_) => {
++                self.phase = Phase::Starting;
++                self.pin_focused = false;
++                self.error = None;
++                self.notice = None;
++                self.user_code.clear();
++                self.verification_uri.clear();
++                self.persistent = None;
++                self.receiver = Some(receiver);
++                self.cancel = Some(cancel);
++                true
++            }
++            Err(e) => {
++                self.phase = Phase::Failed;
++                self.error = Some(format!("Could not start the sign-in worker: {e}"));
++                false
++            }
++        }
++    }
++
++    /// Load the encrypted account for the PIN. It refreshes the Minecraft token
++    /// on the worker; an empty PIN cannot open the vault.
++    pub fn start_load_saved(&mut self) -> bool {
++        if self.is_busy() || self.phase == Phase::SignedIn {
++            return false;
++        }
++        let pin = self.pin.trim().to_owned();
++        if pin.is_empty() {
++            self.phase = Phase::Failed;
++            self.error = Some(crate::launcher::tr("account_pin_required").to_owned());
++            self.notice = None;
++            return false;
++        }
++        let (sender, receiver) = mpsc::channel();
++        let spawned = std::thread::Builder::new()
++            .name("Microsoft saved account".into())
++            .spawn(move || load_worker(sender, pin));
++        match spawned {
++            Ok(_) => {
++                self.phase = Phase::Starting;
++                self.pin_focused = false;
++                self.error = None;
++                self.notice = None;
++                self.user_code.clear();
++                self.verification_uri.clear();
++                self.receiver = Some(receiver);
++                self.cancel = None;
++                true
++            }
++            Err(e) => {
++                self.phase = Phase::Failed;
++                self.error = Some(format!("Could not start the sign-in worker: {e}"));
++                false
++            }
++        }
++    }
++
++    /// Stop the worker. Events it sends after this point are dropped; if the
++    /// Xbox/Minecraft chain had already started, it may still finish and install
++    /// the session, which the next `open` shows.
++    pub fn cancel(&mut self) {
++        if let Some(flag) = &self.cancel {
++            flag.store(true, Ordering::Relaxed);
++        }
++        if self.is_busy() {
++            self.phase = Phase::Cancelled;
++            self.error = None;
++            self.notice = None;
++            self.user_code.clear();
++            self.verification_uri.clear();
++        }
++        self.receiver = None;
++        self.cancel = None;
++        self.pin_focused = false;
++    }
++
++    /// Drain worker messages; call once a frame from the title's draw path.
++    pub fn poll(&mut self) {
++        let Some(receiver) = self.receiver.take() else {
++            return;
++        };
++        let mut events = Vec::new();
++        let mut disconnected = false;
++        loop {
++            match receiver.try_recv() {
++                Ok(event) => events.push(event),
++                Err(TryRecvError::Empty) => break,
++                Err(TryRecvError::Disconnected) => {
++                    disconnected = true;
++                    break;
++                }
++            }
++        }
++        for event in events {
++            self.handle(event);
++        }
++        if disconnected && self.is_busy() {
++            self.phase = Phase::Failed;
++            self.error = Some("The sign-in worker stopped unexpectedly.".into());
++        }
++        if self.is_busy() {
++            self.receiver = Some(receiver);
++        } else {
++            self.cancel = None;
++        }
++    }
++
++    fn handle(&mut self, event: Event) {
++        match event {
++            Event::Code {
++                user_code,
++                verification_uri,
++            } => {
++                self.phase = Phase::Waiting;
++                self.user_code = user_code;
++                self.verification_uri = verification_uri;
++                self.error = None;
++            }
++            Event::Completing => {
++                self.phase = Phase::Completing;
++                self.error = None;
++            }
++            Event::SignedIn {
++                account,
++                persistent,
++                save_error,
++            } => {
++                self.phase = Phase::SignedIn;
++                self.pin_focused = false;
++                self.account_name = account.name;
++                self.account_uuid = auth::parse_uuid(&account.uuid)
++                    .map(horizon_protocol::crypto::uuid_string)
++                    .unwrap_or(account.uuid);
++                self.persistent = Some(persistent);
++                self.error = None;
++                self.notice = save_error.or_else(|| {
++                    (!persistent).then(|| crate::launcher::tr("account_memory_warning").to_owned())
++                });
++                self.user_code.clear();
++                self.verification_uri.clear();
++            }
++            Event::Cancelled => {
++                self.phase = Phase::Cancelled;
++                self.pin_focused = false;
++                self.error = None;
++                self.notice = None;
++                self.user_code.clear();
++                self.verification_uri.clear();
++            }
++            Event::Error(message) => {
++                self.phase = if message.to_lowercase().contains("cancel") {
++                    Phase::Cancelled
++                } else {
++                    Phase::Failed
++                };
++                self.pin_focused = false;
++                self.error = Some(message);
++                self.notice = None;
++                self.user_code.clear();
++                self.verification_uri.clear();
++            }
++        }
++    }
++
++    /// End the session and remove the encrypted record when the PIN can open
++    /// the store. Without a PIN the record on the SD card cannot be removed.
++    pub fn sign_out(&mut self) -> Result<(), String> {
++        let pin = self.pin.trim();
++        let store = auth::open_store((!pin.is_empty()).then_some(pin));
++        let persistent = store.persistent();
++        auth::sign_out(store.as_ref())?;
++        self.phase = Phase::SignedOut;
++        self.account_name.clear();
++        self.account_uuid.clear();
++        self.persistent = None;
++        self.error = None;
++        self.user_code.clear();
++        self.verification_uri.clear();
++        self.pin_focused = false;
++        self.notice =
++            (!persistent).then(|| crate::launcher::tr("account_sign_out_no_pin").to_owned());
++        Ok(())
++    }
++}
++
++fn sign_in_worker(sender: Sender<Event>, cancel: Arc<AtomicBool>, pin: String) {
++    let mut flow = match auth::begin_device_code() {
++        Ok(flow) => flow,
++        Err(message) => {
++            let _ = sender.send(Event::Error(message));
++            return;
++        }
++    };
++    let code = Event::Code {
++        user_code: flow.device.user_code.clone(),
++        verification_uri: flow.device.verification_uri.clone(),
++    };
++    if sender.send(code).is_err() {
++        return;
++    }
++    let mut interval = flow.device.interval.max(1);
++    loop {
++        if !sleep_cancellable(&cancel, interval) {
++            let _ = sender.send(Event::Cancelled);
++            return;
++        }
++        match auth::poll(&mut flow) {
++            Ok(Poll::Pending) => {}
++            Ok(Poll::SlowDown) => interval += 5,
++            Ok(Poll::Authorized) => break,
++            Err(message) => {
++                let _ = sender.send(Event::Error(message));
++                return;
++            }
++        }
++    }
++    if cancel.load(Ordering::Relaxed) {
++        let _ = sender.send(Event::Cancelled);
++        return;
++    }
++    if sender.send(Event::Completing).is_err() {
++        return;
++    }
++    match auth::complete(flow) {
++        Ok(signed) => {
++            let pin = pin.trim();
++            let store = auth::open_store((!pin.is_empty()).then_some(pin));
++            let persistent = store.persistent();
++            let save_error = auth::save(store.as_ref(), &signed).err();
++            let _ = sender.send(Event::SignedIn {
++                account: signed.account,
++                persistent,
++                save_error,
++            });
++        }
++        Err(message) => {
++            let _ = sender.send(Event::Error(message));
++        }
++    }
++}
++
++fn load_worker(sender: Sender<Event>, pin: String) {
++    let store = auth::open_store(Some(pin.as_str()));
++    if !store.persistent() {
++        let _ = sender.send(Event::Error(
++            crate::launcher::tr("account_vault_unavailable").to_owned(),
++        ));
++        return;
++    }
++    match auth::load_saved(store.as_ref()) {
++        Ok(Some(signed)) => {
++            let _ = sender.send(Event::SignedIn {
++                account: signed.account,
++                persistent: true,
++                save_error: None,
++            });
++        }
++        Ok(None) => {
++            let _ = sender.send(Event::Error(
++                crate::launcher::tr("account_no_saved").to_owned(),
++            ));
++        }
++        Err(message) => {
++            let _ = sender.send(Event::Error(message));
++        }
++    }
++}
++
++/// Sleep in slices so cancellation is noticed quickly.
++fn sleep_cancellable(cancel: &AtomicBool, seconds: u64) -> bool {
++    let deadline = Instant::now() + Duration::from_secs(seconds);
++    while Instant::now() < deadline {
++        if cancel.load(Ordering::Relaxed) {
++            return false;
++        }
++        let left = deadline.saturating_duration_since(Instant::now());
++        std::thread::sleep(left.min(Duration::from_millis(100)));
++    }
++    !cancel.load(Ordering::Relaxed)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn account() -> Account {
++        Account {
++            uuid: "0123456789abcdef0123456789abcdef".into(),
++            name: "Steve".into(),
++            xuid: Some("123".into()),
++            skin_url: None,
++            skin_variant: None,
++            cape_url: None,
++        }
++    }
++
++    #[test]
++    fn the_device_code_is_shown_while_the_worker_waits() {
++        let mut ui = AccountUi::default();
++        ui.handle(Event::Code {
++            user_code: "ABCD1234".into(),
++            verification_uri: "https://www.microsoft.com/link".into(),
++        });
++        assert_eq!(ui.phase, Phase::Waiting);
++        assert_eq!(ui.user_code, "ABCD1234");
++        assert_eq!(ui.verification_uri, "https://www.microsoft.com/link");
++        ui.handle(Event::Completing);
++        assert_eq!(ui.phase, Phase::Completing);
++    }
++
++    #[test]
++    fn a_signed_in_account_has_only_public_data() {
++        let mut ui = AccountUi::default();
++        ui.handle(Event::SignedIn {
++            account: account(),
++            persistent: false,
++            save_error: None,
++        });
++        assert_eq!(ui.phase, Phase::SignedIn);
++        assert_eq!(ui.account_name, "Steve");
++        assert_eq!(ui.account_uuid, "01234567-89ab-cdef-0123-456789abcdef");
++        assert_eq!(ui.persistent, Some(false));
++        assert!(ui.notice.is_some(), "memory-only sessions are warned about");
++    }
++
++    #[test]
++    fn cancellation_and_failures_are_distinct() {
++        let mut ui = AccountUi::default();
++        ui.handle(Event::Cancelled);
++        assert_eq!(ui.phase, Phase::Cancelled);
++        assert!(ui.error.is_none());
++        ui.handle(Event::Error(auth::NOT_CONFIGURED.into()));
++        assert_eq!(ui.phase, Phase::Failed);
++        assert_eq!(ui.error.as_deref(), Some(auth::NOT_CONFIGURED));
++    }
++
++    #[test]
++    fn loading_a_saved_account_needs_a_pin() {
++        let mut ui = AccountUi::default();
++        assert!(!ui.start_load_saved());
++        assert_eq!(ui.phase, Phase::Failed);
++        assert!(ui.error.as_deref().is_some_and(|e| e.contains("PIN")));
++    }
++}
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 7f39141..4c131f7 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -5007,6 +5007,7 @@ impl Game<'_> {
+         }
+         if let Some(title) = &mut self.title {
+             title.poll_backup();
++            title.poll_account();
+             if let Some(sound) = title.update_toast(self.settings.notification_display_time) {
+                 self.audio.play(sound, None, 1.0, 1.0);
+             }
+diff --git a/crates/horizon-client/src/game/startup_menu.rs b/crates/horizon-client/src/game/startup_menu.rs
+index 56dc379..bcb4544 100644
+--- a/crates/horizon-client/src/game/startup_menu.rs
++++ b/crates/horizon-client/src/game/startup_menu.rs
+@@ -646,6 +646,7 @@ impl Loading {
+                 .draw(&self.settings, batch, &gui.atlas, self.menu.cursor);
+         } else if let Some(title) = &mut self.menu.title {
+             title.poll_backup();
++            title.poll_account();
+             let _ = title.update_toast(self.settings.notification_display_time);
+             title.draw(
+                 &gui.atlas,
+diff --git a/crates/horizon-client/src/launcher.rs b/crates/horizon-client/src/launcher.rs
+index d1b7863..aabb056 100644
+--- a/crates/horizon-client/src/launcher.rs
++++ b/crates/horizon-client/src/launcher.rs
+@@ -28,13 +28,73 @@ const PT_BR: &[(&str, &str)] = &[
+     ("no_world", "Nenhum mundo ainda"),
+     ("worlds_hint", "Escolher ou criar"),
+     ("account_offline", "Jogando offline"),
++    ("account_connected", "Conectado"),
+     ("account_title", "Conta"),
+-    ("account_soon", "Entrar com Microsoft — em breve"),
++    ("account_sign_in", "Entrar com Microsoft"),
++    ("account_load", "Carregar conta salva"),
++    ("account_sign_out", "Sair"),
++    ("account_cancel", "Cancelar"),
++    ("account_retry", "Tentar novamente"),
++    ("account_pin", "PIN do cofre (opcional)"),
++    ("account_pin_hint_empty", "Sem PIN, a sessão não persiste."),
+     (
+-        "account_note",
+-        "A conta Microsoft entra na fase 2. Por enquanto o jogo usa o nome offline abaixo.",
++        "account_pin_hint_set",
++        "O cofre será gravado cifrado no SD.",
++    ),
++    ("account_starting", "Iniciando login Microsoft..."),
++    ("account_waiting", "Aguardando aprovação..."),
++    ("account_code_label", "Digite este código em:"),
++    (
++        "account_completing",
++        "Aprovado. Conectando à Xbox e ao Minecraft...",
++    ),
++    ("account_signed_in", "Sessão Microsoft ativa"),
++    ("account_not_configured", "Login Microsoft não configurado."),
++    (
++        "account_client_id_hint",
++        "Coloque o client ID em sdmc:/switch/horizon/msa-client-id.txt",
++    ),
++    ("account_expired", "O código expirou. Tente novamente."),
++    ("account_cancelled", "Login cancelado."),
++    (
++        "account_offline_note",
++        "Single player, LAN e servidores offline continuam funcionando.",
++    ),
++    ("account_name_label", "Nome"),
++    ("account_uuid_label", "UUID"),
++    (
++        "account_memory_warning",
++        "Sem PIN, o login vale só até fechar o jogo. Defina um PIN para salvar o cofre.",
++    ),
++    (
++        "account_sign_out_no_pin",
++        "Sessão encerrada. Sem PIN, o cofre no SD não foi apagado.",
++    ),
++    (
++        "account_pin_required",
++        "Informe o PIN do cofre para carregar a conta salva.",
++    ),
++    (
++        "account_vault_unavailable",
++        "Não foi possível abrir o cofre.",
++    ),
++    ("account_no_saved", "Nenhuma conta salva com esse PIN."),
++    (
++        "account_sign_in_again",
++        "Sua sessão Microsoft expirou. Entre de novo.",
++    ),
++    (
++        "account_wrong_pin",
++        "Não foi possível abrir o cofre: PIN errado ou armazenamento resetado.",
++    ),
++    (
++        "account_worker_stopped",
++        "O login parou inesperadamente. Tente novamente.",
++    ),
++    (
++        "account_saved_hint",
++        "Cofre cifrado no SD. O próximo mundo/servidor usa esta conta.",
+     ),
+-    ("account_name", "Nome offline"),
+     ("settings_title", "Ajustes"),
+     ("language", "Idioma"),
+     ("language_pt", "Português (Brasil)"),
+@@ -84,13 +144,76 @@ const EN_US: &[(&str, &str)] = &[
+     ("no_world", "No worlds yet"),
+     ("worlds_hint", "Choose or create"),
+     ("account_offline", "Playing offline"),
++    ("account_connected", "Signed in"),
+     ("account_title", "Account"),
+-    ("account_soon", "Sign in with Microsoft — coming soon"),
++    ("account_sign_in", "Sign in with Microsoft"),
++    ("account_load", "Load saved account"),
++    ("account_sign_out", "Sign out"),
++    ("account_cancel", "Cancel"),
++    ("account_retry", "Try again"),
++    ("account_pin", "Vault PIN (optional)"),
++    (
++        "account_pin_hint_empty",
++        "Without a PIN the session does not persist.",
++    ),
++    (
++        "account_pin_hint_set",
++        "The vault will be written encrypted to the SD card.",
++    ),
++    ("account_starting", "Starting Microsoft sign-in..."),
++    ("account_waiting", "Waiting for approval..."),
++    ("account_code_label", "Enter this code at:"),
++    (
++        "account_completing",
++        "Approved. Connecting to Xbox Live and Minecraft...",
++    ),
++    ("account_signed_in", "Microsoft session active"),
++    (
++        "account_not_configured",
++        "Microsoft sign-in is not configured.",
++    ),
++    (
++        "account_client_id_hint",
++        "Put the client ID in sdmc:/switch/horizon/msa-client-id.txt",
++    ),
++    ("account_expired", "The code expired. Try again."),
++    ("account_cancelled", "Sign-in cancelled."),
++    (
++        "account_offline_note",
++        "Single player, LAN and offline-mode servers still work.",
++    ),
++    ("account_name_label", "Name"),
++    ("account_uuid_label", "UUID"),
++    (
++        "account_memory_warning",
++        "Without a PIN the sign-in lasts only until Horizon closes. Set a PIN to save the vault.",
++    ),
++    (
++        "account_sign_out_no_pin",
++        "Signed out. Without the PIN the vault on the SD card was not removed.",
++    ),
++    (
++        "account_pin_required",
++        "Enter the vault PIN to load the saved account.",
++    ),
++    ("account_vault_unavailable", "Could not open the vault."),
++    ("account_no_saved", "No saved account with this PIN."),
++    (
++        "account_sign_in_again",
++        "Your Microsoft session expired. Sign in again.",
++    ),
++    (
++        "account_wrong_pin",
++        "Could not open the vault: wrong PIN or the storage was reset.",
++    ),
++    (
++        "account_worker_stopped",
++        "Sign-in stopped unexpectedly. Try again.",
++    ),
+     (
+-        "account_note",
+-        "Microsoft sign-in arrives in phase 2. For now the game uses the offline name below.",
++        "account_saved_hint",
++        "Vault encrypted on the SD card. The next world/server uses this account.",
+     ),
+-    ("account_name", "Offline name"),
+     ("settings_title", "Settings"),
+     ("language", "Language"),
+     ("language_pt", "Português (Brasil)"),
+diff --git a/crates/horizon-client/src/lib.rs b/crates/horizon-client/src/lib.rs
+index 3de251c..789345c 100644
+--- a/crates/horizon-client/src/lib.rs
++++ b/crates/horizon-client/src/lib.rs
+@@ -1,6 +1,7 @@
+ //! Horizon native client: resources, world streaming, rendering and the
+ //! bindings between the validated simulation pieces and the game loop.
+ #![forbid(unsafe_code)]
++pub mod account_ui;
+ pub mod advancements;
+ pub mod ambience;
+ pub mod animate_tick;
+diff --git a/crates/horizon-client/src/title.rs b/crates/horizon-client/src/title.rs
+index 8e27737..b7e0947 100644
+--- a/crates/horizon-client/src/title.rs
++++ b/crates/horizon-client/src/title.rs
+@@ -1,6 +1,7 @@
+ //! Title (the Switch launcher dashboard), world selection and world creation
+ //! screens, drawn as HUD quads.
+ use crate::{
++    account_ui::{self, AccountUi},
+     hud::{HudAtlas, HudBatch, rgba},
+     lang, launcher,
+     save::Level,
+@@ -94,6 +95,11 @@ fn name_field_rect(w: f32) -> [f32; 4] {
+     [(w.ceil() / 2.0).floor() - 100.0, 86.0, 200.0, 20.0]
+ }
+ 
++/// The Account screen's vault PIN field.
++fn account_field_rect(w: f32) -> [f32; 4] {
++    [(w.ceil() / 2.0).floor() - 100.0, 44.0, 200.0, 20.0]
++}
++
+ fn translate(key: &str, fallback: &str, args: &[&dyn std::fmt::Display]) -> String {
+     let args: Vec<Text> = args
+         .iter()
+@@ -228,6 +234,8 @@ pub struct Title {
+     player_name: String,
+     name_focused: bool,
+     name_status: Option<NameStatus>,
++    /// The Microsoft Account screen's worker, PIN and device-code state.
++    account: AccountUi,
+ }
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ enum NameStatus {
+@@ -364,6 +372,7 @@ impl Title {
+             player_name,
+             name_focused: false,
+             name_status: None,
++            account: AccountUi::default(),
+         }
+     }
+     /// The language the game loaded, for the selected row and the toggle.
+@@ -386,6 +395,12 @@ impl Title {
+     pub fn open_account(&mut self) {
+         self.mode = Mode::Account;
+         self.player_name = launcher::player_name_preview(&self.home);
++        self.account.open();
++    }
++    /// Drain the Microsoft sign-in worker; the title's draw path calls this
++    /// once a frame so the network never blocks input.
++    pub fn poll_account(&mut self) {
++        self.account.poll();
+     }
+     /// Keep the edited offline name in `horizon-player.txt`; the next world
+     /// (or LAN host) reads it through `Options::player_name`.
+@@ -729,6 +744,234 @@ impl Title {
+         );
+     }
+ 
++    /// The Account screen: the vault PIN, the device code and the sign-in
++    /// state. The buttons are drawn by `draw`'s shared loop.
++    fn draw_account(&self, atlas: &HudAtlas, batch: &mut HudBatch) {
++        let w = batch.width.ceil();
++        let cx = (w / 2.0).floor();
++        centered(atlas, batch, launcher::tr("account_title"), 12.0, u32::MAX);
++        batch.text(
++            atlas,
++            launcher::tr("account_pin"),
++            cx - 100.0,
++            30.0,
++            rgba(160, 160, 160, 255),
++            true,
++        );
++        self.caret.borrow_mut().draw(
++            batch,
++            atlas,
++            (ACCOUNT_PIN, &self.account.pin, 64),
++            account_field_rect(w),
++            self.account.pin_focused,
++            self.started,
++        );
++        let hint = if self.account.pin.trim().is_empty() {
++            launcher::tr("account_pin_hint_empty")
++        } else {
++            launcher::tr("account_pin_hint_set")
++        };
++        for (i, line) in wrapped(atlas, hint, w - 60.0).iter().take(2).enumerate() {
++            centered(
++                atlas,
++                batch,
++                line,
++                68.0 + i as f32 * 9.0,
++                rgba(150, 150, 150, 255),
++            );
++        }
++        match self.account.phase {
++            account_ui::Phase::Starting => {
++                centered(
++                    atlas,
++                    batch,
++                    launcher::tr("account_starting"),
++                    92.0,
++                    u32::MAX,
++                );
++            }
++            account_ui::Phase::Waiting => {
++                centered(
++                    atlas,
++                    batch,
++                    launcher::tr("account_waiting"),
++                    92.0,
++                    rgba(255, 220, 90, 255),
++                );
++                centered(
++                    atlas,
++                    batch,
++                    launcher::tr("account_code_label"),
++                    106.0,
++                    rgba(160, 160, 160, 255),
++                );
++                let code = Text::literal(&self.account.user_code);
++                let width = HudBatch::text_width(atlas, &self.account.user_code) * 2.0;
++                crate::ui::text_scaled(
++                    batch,
++                    atlas,
++                    &code,
++                    cx - (width / 2.0).floor(),
++                    116.0,
++                    2.0,
++                    u32::MAX,
++                );
++                if !self.account.verification_uri.is_empty() {
++                    centered(
++                        atlas,
++                        batch,
++                        &self.account.verification_uri,
++                        140.0,
++                        u32::MAX,
++                    );
++                }
++            }
++            account_ui::Phase::Completing => {
++                for (i, line) in wrapped(atlas, launcher::tr("account_completing"), w - 60.0)
++                    .iter()
++                    .take(3)
++                    .enumerate()
++                {
++                    centered(atlas, batch, line, 92.0 + i as f32 * 9.0, u32::MAX);
++                }
++            }
++            account_ui::Phase::SignedIn => {
++                centered(
++                    atlas,
++                    batch,
++                    &format!(
++                        "{}: {}",
++                        launcher::tr("account_name_label"),
++                        self.account.account_name
++                    ),
++                    92.0,
++                    u32::MAX,
++                );
++                centered(
++                    atlas,
++                    batch,
++                    &format!(
++                        "{}: {}",
++                        launcher::tr("account_uuid_label"),
++                        self.account.account_uuid
++                    ),
++                    104.0,
++                    rgba(160, 160, 160, 255),
++                );
++                centered(
++                    atlas,
++                    batch,
++                    launcher::tr("account_signed_in"),
++                    120.0,
++                    rgba(90, 210, 120, 255),
++                );
++                if self.account.persistent == Some(true) {
++                    for (i, line) in wrapped(atlas, launcher::tr("account_saved_hint"), w - 60.0)
++                        .iter()
++                        .take(2)
++                        .enumerate()
++                    {
++                        centered(
++                            atlas,
++                            batch,
++                            line,
++                            132.0 + i as f32 * 9.0,
++                            rgba(150, 150, 150, 255),
++                        );
++                    }
++                }
++            }
++            account_ui::Phase::SignedOut => {
++                centered(
++                    atlas,
++                    batch,
++                    launcher::tr("account_offline"),
++                    92.0,
++                    u32::MAX,
++                );
++                for (i, line) in wrapped(atlas, launcher::tr("account_offline_note"), w - 60.0)
++                    .iter()
++                    .take(2)
++                    .enumerate()
++                {
++                    centered(
++                        atlas,
++                        batch,
++                        line,
++                        104.0 + i as f32 * 9.0,
++                        rgba(160, 160, 160, 255),
++                    );
++                }
++            }
++            account_ui::Phase::Failed | account_ui::Phase::Cancelled => {
++                let color = if self.account.phase == account_ui::Phase::Failed {
++                    rgba(255, 100, 100, 255)
++                } else {
++                    rgba(255, 220, 90, 255)
++                };
++                for (i, line) in self
++                    .account_error_lines(atlas, w)
++                    .iter()
++                    .take(7)
++                    .enumerate()
++                {
++                    centered(atlas, batch, line, 88.0 + i as f32 * 9.0, color);
++                }
++            }
++        }
++        if let Some(notice) = &self.account.notice {
++            let y = match self.account.phase {
++                account_ui::Phase::SignedIn => 150.0,
++                account_ui::Phase::SignedOut => 126.0,
++                _ => 152.0,
++            };
++            for (i, line) in wrapped(atlas, notice, w - 60.0).iter().take(2).enumerate() {
++                centered(
++                    atlas,
++                    batch,
++                    line,
++                    y + i as f32 * 9.0,
++                    rgba(220, 190, 100, 255),
++                );
++            }
++        }
++    }
++
++    /// The Account screen's error, with the messages the player can act on
++    /// translated. Unknown errors (network, OAuth) stay as the auth module
++    /// wrote them; none contains a token.
++    fn account_error_lines(&self, atlas: &HudAtlas, w: f32) -> Vec<String> {
++        let Some(error) = self.account.error.as_deref() else {
++            return if self.account.phase == account_ui::Phase::Cancelled {
++                vec![launcher::tr("account_cancelled").to_owned()]
++            } else {
++                Vec::new()
++            };
++        };
++        let lines = if error == crate::auth::NOT_CONFIGURED {
++            vec![
++                launcher::tr("account_not_configured").to_owned(),
++                launcher::tr("account_client_id_hint").to_owned(),
++            ]
++        } else if error == crate::auth::SIGN_IN_AGAIN {
++            vec![launcher::tr("account_sign_in_again").to_owned()]
++        } else if error.contains("expired") {
++            vec![launcher::tr("account_expired").to_owned()]
++        } else if error.to_lowercase().contains("cancel") {
++            vec![launcher::tr("account_cancelled").to_owned()]
++        } else if error.contains("Could not unlock") {
++            vec![launcher::tr("account_wrong_pin").to_owned()]
++        } else if error.contains("worker stopped") {
++            vec![launcher::tr("account_worker_stopped").to_owned()]
++        } else {
++            vec![error.to_owned()]
++        };
++        lines
++            .iter()
++            .flat_map(|line| wrapped(atlas, line, w - 60.0))
++            .collect()
++    }
++
+     pub fn recent_worlds(&self) -> Vec<WorldEntry> {
+         let mut recent = self.recent.borrow_mut();
+         match &*recent {
+@@ -820,6 +1063,10 @@ impl Title {
+                 } else {
+                     launcher::tr("language_en")
+                 };
++                let account = crate::auth::current().map_or_else(
++                    || format!("{} · {}", self.player_name, launcher::tr("account_offline")),
++                    |session| format!("{} · {}", session.name, launcher::tr("account_connected")),
++                );
+                 vec![
+                     card(d.play, launcher::tr("play"), Some(last), true, 1),
+                     card(
+@@ -829,17 +1076,7 @@ impl Title {
+                         true,
+                         8,
+                     ),
+-                    card(
+-                        d.account,
+-                        launcher::tr("account"),
+-                        Some(format!(
+-                            "{} · {}",
+-                            self.player_name,
+-                            launcher::tr("account_offline")
+-                        )),
+-                        true,
+-                        9,
+-                    ),
++                    card(d.account, launcher::tr("account"), Some(account), true, 9),
+                     card(
+                         d.mods,
+                         launcher::tr("mods"),
+@@ -901,18 +1138,71 @@ impl Title {
+             }
+             Mode::Account => {
+                 let cx = (w / 2.0).floor();
+-                vec![
+-                    b(
+-                        cx - 100.0,
+-                        128.0,
+-                        200.0,
+-                        launcher::tr("account_soon"),
+-                        false,
+-                        0,
+-                    ),
+-                    b(cx - 100.0, 154.0, 98.0, launcher::tr("settings"), true, 40),
+-                    b(cx + 2.0, 154.0, 98.0, launcher::tr("back"), true, 41),
+-                ]
++                let back = |y: f32| b(cx - 100.0, y, 200.0, launcher::tr("back"), true, 41);
++                match self.account.phase {
++                    account_ui::Phase::Starting
++                    | account_ui::Phase::Waiting
++                    | account_ui::Phase::Completing => vec![
++                        b(
++                            cx - 100.0,
++                            174.0,
++                            200.0,
++                            launcher::tr("account_cancel"),
++                            true,
++                            45,
++                        ),
++                        back(198.0),
++                    ],
++                    account_ui::Phase::SignedIn => vec![
++                        b(
++                            cx - 100.0,
++                            170.0,
++                            200.0,
++                            launcher::tr("account_sign_out"),
++                            true,
++                            44,
++                        ),
++                        back(194.0),
++                    ],
++                    account_ui::Phase::Failed | account_ui::Phase::Cancelled => vec![
++                        b(
++                            cx - 100.0,
++                            160.0,
++                            200.0,
++                            launcher::tr("account_retry"),
++                            true,
++                            42,
++                        ),
++                        b(
++                            cx - 100.0,
++                            184.0,
++                            200.0,
++                            launcher::tr("account_load"),
++                            true,
++                            43,
++                        ),
++                        back(208.0),
++                    ],
++                    account_ui::Phase::SignedOut => vec![
++                        b(
++                            cx - 100.0,
++                            150.0,
++                            200.0,
++                            launcher::tr("account_sign_in"),
++                            true,
++                            42,
++                        ),
++                        b(
++                            cx - 100.0,
++                            174.0,
++                            200.0,
++                            launcher::tr("account_load"),
++                            true,
++                            43,
++                        ),
++                        back(198.0),
++                    ],
++                }
+             }
+             Mode::Select { selected, .. } => vec![
+                 b(
+@@ -1177,29 +1467,7 @@ impl Title {
+             }
+             Mode::Account => {
+                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+-                centered(atlas, batch, launcher::tr("account_title"), 18.0, u32::MAX);
+-                centered(
+-                    atlas,
+-                    batch,
+-                    &format!(
+-                        "{}: {} · {}",
+-                        launcher::tr("account_name"),
+-                        self.player_name,
+-                        launcher::tr("account_offline")
+-                    ),
+-                    48.0,
+-                    u32::MAX,
+-                );
+-                let note = launcher::tr("account_note");
+-                for (i, line) in wrapped(atlas, note, w - 60.0).iter().enumerate() {
+-                    centered(
+-                        atlas,
+-                        batch,
+-                        line,
+-                        68.0 + i as f32 * 10.0,
+-                        rgba(160, 160, 160, 255),
+-                    );
+-                }
++                self.draw_account(atlas, batch);
+             }
+             Mode::Select { worlds, selected } => {
+                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+@@ -1603,14 +1871,42 @@ impl Title {
+                 self.name_focused = x >= fx && x < fx + fw && y >= fy && y < fy + fh;
+                 Action::None
+             }
+-            (Mode::Account, Some(40)) => {
+-                self.open_settings();
++            (Mode::Account, Some(42)) => {
++                self.account.pin_focused = false;
++                self.account.start_sign_in();
++                Action::None
++            }
++            (Mode::Account, Some(43)) => {
++                self.account.pin_focused = false;
++                self.account.start_load_saved();
++                Action::None
++            }
++            (Mode::Account, Some(44)) => {
++                self.account.pin_focused = false;
++                if let Err(error) = self.account.sign_out() {
++                    self.account.error = Some(error);
++                    self.account.phase = account_ui::Phase::Failed;
++                }
++                Action::None
++            }
++            (Mode::Account, Some(45)) => {
++                self.account.cancel();
+                 Action::None
+             }
+             (Mode::Account, Some(41)) => {
++                self.account.cancel();
+                 self.mode = Mode::Main;
+                 Action::None
+             }
++            (Mode::Account, None) => {
++                if !self.account.is_busy() && self.account.phase != account_ui::Phase::SignedIn {
++                    let [fx, fy, fw, fh] = account_field_rect(w);
++                    self.account.pin_focused = x >= fx && x < fx + fw && y >= fy && y < fy + fh;
++                } else {
++                    self.account.pin_focused = false;
++                }
++                Action::None
++            }
+             (Mode::Multiplayer(_), hit) => match self.multiplayer_click(hit, x, y, (w, h)) {
+                 crate::multiplayer::Outcome::Back => {
+                     self.mode = Mode::Main;
+@@ -1782,6 +2078,8 @@ impl Title {
+                 &mut self.search,
+                 &mut self.player_name,
+                 self.name_focused,
++                &mut self.account.pin,
++                self.account.pin_focused,
+             ),
+         }
+     }
+@@ -1794,6 +2092,8 @@ impl Title {
+             &mut self.search,
+             &mut self.player_name,
+             self.name_focused,
++            &mut self.account.pin,
++            self.account.pin_focused,
+         )
+         .is_some()
+     }
+@@ -1805,6 +2105,8 @@ impl Title {
+             &mut self.search,
+             &mut self.player_name,
+             self.name_focused,
++            &mut self.account.pin,
++            self.account.pin_focused,
+         ) else {
+             return false;
+         };
+@@ -1849,6 +2151,7 @@ impl Title {
+         let x = (w / 2.0).floor() - 100.0;
+         match &self.mode {
+             Mode::Settings if self.name_focused => Some(name_field_rect(w)),
++            Mode::Account if self.account.pin_focused => Some(account_field_rect(w)),
+             Mode::Select { .. } if self.search_focused => Some([x, 21.0, 200.0, 20.0]),
+             Mode::Edit { focused: true, .. } => Some([x, edit_top(h) + 39.0, 200.0, 20.0]),
+             Mode::Create { focus, options, .. } => create_world::field_rect(w, h, options.tab)
+@@ -1879,6 +2182,8 @@ impl Title {
+             &mut self.search,
+             &mut self.player_name,
+             self.name_focused,
++            &mut self.account.pin,
++            self.account.pin_focused,
+         ) {
+             self.caret.get_mut().press(atlas, field, rect, x, shift);
+         }
+@@ -1891,6 +2196,8 @@ impl Title {
+             &mut self.search,
+             &mut self.player_name,
+             self.name_focused,
++            &mut self.account.pin,
++            self.account.pin_focused,
+         ) {
+             self.caret.get_mut().drag(atlas, field, x);
+         }
+@@ -1936,6 +2243,12 @@ impl Title {
+         if matches!(self.mode, Mode::Settings) {
+             self.name_focused = !self.name_focused;
+         }
++        if matches!(self.mode, Mode::Account)
++            && !self.account.is_busy()
++            && self.account.phase != account_ui::Phase::SignedIn
++        {
++            self.account.pin_focused = !self.account.pin_focused;
++        }
+         if let Mode::Edit { focused, .. } = &mut self.mode {
+             *focused = !*focused;
+         }
+@@ -1994,6 +2307,10 @@ impl Title {
+         }
+         match &self.mode {
+             Mode::Backup { .. } => {}
++            Mode::Account => {
++                self.account.cancel();
++                self.mode = Mode::Main;
++            }
+             Mode::Edit { world, .. } | Mode::Delete { world } => {
+                 let folder = world.folder.clone();
+                 self.return_to_list(Some(&folder));
+@@ -2092,20 +2409,24 @@ fn wrapped(atlas: &HudAtlas, text: &str, width: f32) -> Vec<String> {
+ const SEARCH: crate::clipboard::FieldId = ("world.search", 0);
+ const EDIT_NAME: crate::clipboard::FieldId = ("world.edit-name", 0);
+ const PLAYER_NAME: crate::clipboard::FieldId = ("launcher.player-name", 0);
++const ACCOUNT_PIN: crate::clipboard::FieldId = ("launcher.account-pin", 0);
+ const WORLD_NAME: crate::clipboard::FieldId = ("world.name", 0);
+ const WORLD_SEED: crate::clipboard::FieldId = ("world.seed", 0);
+-/// The focused field of the world screens and the launcher's settings: the
+-/// list's search, the world name being edited, Create New World's name or
+-/// seed, or the offline player name.
++/// The focused field of the world screens, the launcher's settings and the
++/// Account screen: the list's search, the world name being edited, Create New
++/// World's name or seed, the offline player name, or the vault PIN.
+ fn caret_field<'a>(
+     mode: &'a mut Mode,
+     search_focused: bool,
+     search: &'a mut String,
+     player_name: &'a mut String,
+     name_focused: bool,
++    pin: &'a mut String,
++    pin_focused: bool,
+ ) -> Option<(crate::clipboard::FieldId, &'a mut String, usize)> {
+     match mode {
+         Mode::Settings if name_focused => Some((PLAYER_NAME, player_name, 16)),
++        Mode::Account if pin_focused => Some((ACCOUNT_PIN, pin, 64)),
+         Mode::Select { .. } if search_focused => Some((SEARCH, search, 50)),
+         Mode::Edit {
+             name,
+diff --git a/crates/horizon-client/src/title/tests.rs b/crates/horizon-client/src/title/tests.rs
+index a8ad93d..7eb170f 100644
+--- a/crates/horizon-client/src/title/tests.rs
++++ b/crates/horizon-client/src/title/tests.rs
+@@ -874,3 +874,55 @@ fn settings_edits_the_offline_name_the_game_reads() {
+         "name:Dudu_2\n"
+     );
+ }
++
++#[test]
++fn account_screen_switches_buttons_with_the_sign_in_state() {
++    let mut f = Fixture::new();
++    f.title.mode = Mode::Account;
++    f.title.account.phase = crate::account_ui::Phase::SignedOut;
++    let labels = |f: &Fixture| -> Vec<String> {
++        f.title
++            .buttons(480.0, 262.0)
++            .into_iter()
++            .map(|b| b.label)
++            .collect()
++    };
++    let idle = labels(&f);
++    assert!(idle.contains(&launcher::tr("account_sign_in").to_owned()));
++    assert!(idle.contains(&launcher::tr("account_load").to_owned()));
++    assert!(idle.contains(&launcher::tr("back").to_owned()));
++
++    // The PIN field is a focus target only while it can be edited.
++    let field = account_field_rect(480.0);
++    f.title
++        .click(field[0] + 4.0, field[1] + 4.0, (480.0, 262.0));
++    assert!(f.title.account.pin_focused);
++    f.title.account.phase = crate::account_ui::Phase::Waiting;
++    f.title
++        .click(field[0] + 4.0, field[1] + 4.0, (480.0, 262.0));
++    assert!(
++        !f.title.account.pin_focused,
++        "the PIN is frozen while waiting"
++    );
++    let waiting = labels(&f);
++    assert!(waiting.contains(&launcher::tr("account_cancel").to_owned()));
++    assert!(!waiting.contains(&launcher::tr("account_sign_in").to_owned()));
++
++    f.title.account.phase = crate::account_ui::Phase::SignedIn;
++    let signed_in = labels(&f);
++    assert!(signed_in.contains(&launcher::tr("account_sign_out").to_owned()));
++    assert!(!signed_in.contains(&launcher::tr("account_sign_in").to_owned()));
++}
++
++#[test]
++fn account_not_configured_points_at_the_client_id_file() {
++    let mut f = Fixture::new();
++    f.title.account.phase = crate::account_ui::Phase::Failed;
++    f.title.account.error = Some(crate::auth::NOT_CONFIGURED.to_owned());
++    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
++    let lines = f.title.account_error_lines(&atlas, 480.0);
++    assert!(
++        lines.iter().any(|line| line.contains("msa-client-id.txt")),
++        "the hint must point at the client ID file: {lines:?}"
++    );
++}
