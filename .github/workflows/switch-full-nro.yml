@@ -1,0 +1,99 @@
+name: switch-full-nro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Clone sources
+        run: |
+          set -eux
+          git clone --depth 1 --branch v0.1.1 https://github.com/MakrSas/horizon-switch.git makrsas
+          git clone --depth 1 https://github.com/tarkodev/horizon-switch.git tarkodev
+          mkdir -p makrsas/switch/vendor
+          cp -a tarkodev/switch/vendor/cpal makrsas/switch/vendor/cpal
+
+      - name: Apply launcher and auth patches
+        run: |
+          set -eux
+          cd makrsas
+          git apply ../patches/launcher-mvp.patch
+          git apply ../patches/auth-msa.patch
+          printf '\n[patch.crates-io]\ncpal = { path = "switch/vendor/cpal" }\n' >> switch/cargo-config.toml
+          sed -i 's/--no-default-features --bin horizon-client/--no-default-features --features audio --bin horizon-client/' switch/scripts/build.sh
+          grep -n 'features audio' switch/scripts/build.sh
+          tail -5 switch/cargo-config.toml
+
+      - name: Prepare NVK sources
+        run: |
+          set -eux
+          cd makrsas
+          mkdir -p switch/build/nvk-src
+          git clone https://github.com/JohnUzoka/bevy-horizon switch/build/nvk-src/bevy-horizon
+          git -C switch/build/nvk-src/bevy-horizon checkout -q 3eac779b232ee47cd0eb957676c64386ac7b0f1d
+          sed -i '/^RUN dkp-pacman -Syu/,/dkp-pacman -Scc --noconfirm/d' switch/build/nvk-src/bevy-horizon/Containerfile
+          grep -n 'dkp-pacman' switch/build/nvk-src/bevy-horizon/Containerfile || true
+
+      - name: Build NVK
+        run: |
+          set -eux
+          cd makrsas
+          switch/scripts/build-nvk.sh
+          ls -lh switch/build/nvk/lib/libvulkan_bh.a
+
+      - name: Prune Docker
+        run: |
+          docker system prune -af --volumes || true
+          df -h
+
+      - name: Build toolchain image
+        run: |
+          set -eux
+          sed -i '/^RUN dkp-pacman -Syu/,/switch-tools 1.13.1-1/d' tarkodev/switch/Containerfile
+          docker build -t horizon-build -f tarkodev/switch/Containerfile tarkodev/switch
+
+      - name: Build Horizon with audio, launcher and auth
+        run: |
+          set -eux
+          docker run --rm \
+            -v "$PWD/makrsas:/work" \
+            -w /work \
+            horizon-build \
+            bash -lc 'RUST_TOOLCHAIN=nightly-2026-10-04 switch/scripts/build.sh'
+
+      - name: Package NRO
+        run: |
+          set -eux
+          mkdir -p out
+          docker run --rm -v "$PWD/makrsas:/work" -v "$PWD/out:/out" -w /work horizon-build bash -lc '
+            nacptool --create "Horizon Full" "Horizon contributors" "0.1.1-full" /tmp/horizon.nacp --titleid=0100485952450000
+            elf2nro switch/build/horizon.elf /out/Horizon-full.nro --icon=switch/icon.jpg --nacp=/tmp/horizon.nacp
+          '
+          ls -lh out
+          sha256sum out/Horizon-full.nro
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Horizon-full-nro
+          path: out/Horizon-full.nro
