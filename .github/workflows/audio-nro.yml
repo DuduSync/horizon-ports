@@ -42,6 +42,16 @@ jobs:
           grep -n 'features audio' switch/scripts/build.sh
           tail -5 switch/cargo-config.toml
 
+      - name: Prepare NVK sources
+        run: |
+          set -eux
+          cd makrsas
+          mkdir -p switch/build/nvk-src
+          git clone https://github.com/JohnUzoka/bevy-horizon switch/build/nvk-src/bevy-horizon
+          git -C switch/build/nvk-src/bevy-horizon checkout -q 3eac779b232ee47cd0eb957676c64386ac7b0f1d
+          sed -i '/^RUN dkp-pacman -Syu/,/dkp-pacman -Scc --noconfirm/d' switch/build/nvk-src/bevy-horizon/Containerfile
+          grep -n 'dkp-pacman' switch/build/nvk-src/bevy-horizon/Containerfile || true
+
       - name: Build NVK
         run: |
           set -eux
@@ -57,7 +67,7 @@ jobs:
       - name: Build toolchain image
         run: |
           set -eux
-          sed -i '/test "\$(dkp-pacman -Q/d' tarkodev/switch/Containerfile
+          sed -i '/^RUN dkp-pacman -Syu/,/switch-tools 1.13.1-1/d' tarkodev/switch/Containerfile
           docker build -t horizon-build -f tarkodev/switch/Containerfile tarkodev/switch
 
       - name: Build Horizon with audio
@@ -67,7 +77,7 @@ jobs:
             -v "$PWD/makrsas:/work" \
             -w /work \
             horizon-build \
-            bash -lc 'dkp-pacman -S --noconfirm switch-mesa switch-libdrm_nouveau switch-libexpat switch-libzstd switch-zlib && RUST_TOOLCHAIN=nightly-2026-10-04 switch/scripts/build.sh'
+            bash -lc 'RUST_TOOLCHAIN=nightly-2026-10-04 switch/scripts/build.sh'
 
       - name: Package NRO
         run: |
