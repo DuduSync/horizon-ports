@@ -1,0 +1,70 @@
+name: switch-check
+
+on:
+  workflow_dispatch:
+    inputs:
+      patch:
+        description: Patch file under patches/ to check
+        required: false
+        default: v4.patch
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Clone sources
+        run: |
+          set -eux
+          git clone --depth 1 --branch v0.1.1 https://github.com/MakrSas/horizon-switch.git makrsas
+          git clone --depth 1 https://github.com/tarkodev/horizon-switch.git tarkodev
+          mkdir -p makrsas/switch/vendor
+          cp -a tarkodev/switch/vendor/cpal makrsas/switch/vendor/cpal
+
+      - name: Apply patch
+        run: |
+          set -eux
+          cd makrsas
+          git apply ../patches/${{ inputs.patch }}
+
+      - name: Build toolchain image
+        run: |
+          set -eux
+          sed -i '/^RUN dkp-pacman -Syu/,/switch-tools 1.13.1-1/d' tarkodev/switch/Containerfile
+          sed -i 's/nightly-2026-10-04/nightly-2026-10-25/g' tarkodev/switch/Containerfile
+          docker build -t horizon-build -f tarkodev/switch/Containerfile tarkodev/switch
+
+      - name: Cargo check
+        run: |
+          set -eux
+          docker run --rm -v "$PWD/makrsas:/work" -w /work horizon-build bash -lc '
+            set -eux
+            export RUST_TOOLCHAIN=nightly-2026-10-25
+            . switch/scripts/env.sh
+            switch/scripts/prepare-std.sh
+            make -s -C switch/nxshim OUT="$SWITCH_BUILD/nxshim"
+            mkdir -p "$SWITCH_BUILD"
+            sed -e "s|@SWITCH_DIR@|$SWITCH_DIR|g" -e "s|@SWITCH_BUILD@|$SWITCH_BUILD|g" \
+                -e "s|@DEVKITPRO@|$DEVKITPRO|g" \
+                switch/cargo-config.toml > "$SWITCH_BUILD/cargo-config.toml"
+            cargo +"$RUST_TOOLCHAIN" check --release \
+              --config "$SWITCH_BUILD/cargo-config.toml" \
+              -p horizon-client --no-default-features --features audio --bin horizon-client
+          '
