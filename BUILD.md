@@ -55,7 +55,7 @@ Build run `44794429415`:
 
 - `Horizon-v3.nro` — 54,473,548 bytes, SHA-256 `0977ae6dedbc1ef517786775ae0c75866b2b044ec9bcc260e896fb2016cce1aa`.
 - `horizon.elf` — 64,640,312 bytes, SHA-256 `e8cdf1f373503fc0798d82dc01f6bb63db7ff5f320d589a0ba08a3f5c32991bb`.
-- NSP pending: the console was offline when the watcher ran, so `prod.keys` could not be fetched. The NRO is in `/sdcard/Horizon-Ports/builds/v3/`.
+- `Horizon-v3.nsp` — 29,535,960 bytes, SHA-256 `e62700b8c0b776ab6b31de4211ffa3d3fb44dd1068bba0ea3504b9bd40188408`, packaged locally with the console's `prod.keys` and uploaded to `/switch/Horizon-v3.nsp`. The NRO is also in `/switch/Horizon-v3.nro`.
 
 v3 fixes the launcher's coordinate space (1040x700 dp instead of the 426x240 GUI pixels), rasterizes the Geist faces at the screen density, and re-rasterizes run-time glyphs after the atlas texture is rebuilt. The v4 branch adds the live 1080p query, the mouse cursor and cursor-speed setting; see `docs/input-hid-mouse.md`.
 
