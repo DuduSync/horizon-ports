@@ -2692,7 +2692,7 @@ index 1903cab..3a453af 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..37fb09b 100644
+index 0937cdc..20a1dcf 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -2796,23 +2796,29 @@ index 0937cdc..37fb09b 100644
          }
          if let WindowEvent::ModifiersChanged(m) = &event {
              self.modifiers = m.state();
-@@ -11202,6 +11246,15 @@ impl ApplicationHandler for Game<'_> {
+@@ -11202,6 +11246,21 @@ impl ApplicationHandler for Game<'_> {
          ) {
              self.last_input = Instant::now();
          }
-+        if matches!(
-+            &event,
-+            WindowEvent::MouseInput { .. }
-+                | WindowEvent::MouseWheel { .. }
-+                | WindowEvent::CursorMoved { .. }
-+        ) {
-+            self.mouse_seen = true;
-+            self.mouse_last = Instant::now();
++        match &event {
++            // The pad injects its pointer as these events with a dummy device; only a real
++            // mouse, touch or the window's own pointer counts as mouse activity.
++            WindowEvent::CursorMoved { device_id, .. }
++            | WindowEvent::MouseInput { device_id, .. }
++            | WindowEvent::MouseWheel { device_id, .. }
++                if *device_id == DeviceId::dummy() => {}
++            WindowEvent::CursorMoved { .. }
++            | WindowEvent::MouseInput { .. }
++            | WindowEvent::MouseWheel { .. } => {
++                self.mouse_seen = true;
++                self.mouse_last = Instant::now();
++            }
++            _ => {}
 +        }
          if (self.pending_entry.is_some() || self.world_loader.is_some())
              && matches!(&event, WindowEvent::KeyboardInput { event, .. }
                  if event.state == ElementState::Pressed
-@@ -11284,10 +11337,27 @@ impl ApplicationHandler for Game<'_> {
+@@ -11284,10 +11343,27 @@ impl ApplicationHandler for Game<'_> {
                          }
                      }
                  }
@@ -2843,7 +2849,7 @@ index 0937cdc..37fb09b 100644
                          if self.screen == Screen::Advancements {
                              self.advancements_drag();
                          }
-@@ -11335,16 +11405,16 @@ impl ApplicationHandler for Game<'_> {
+@@ -11335,16 +11411,16 @@ impl ApplicationHandler for Game<'_> {
                      let d = scaled(raw_y) as f32;
                      if self.dialog_open() {
                          self.dialog_scroll(d);
@@ -2865,7 +2871,7 @@ index 0937cdc..37fb09b 100644
                      }
                      if self.screen == Screen::Playing
                          && self.sleeping.is_none()
-@@ -11441,7 +11511,7 @@ impl ApplicationHandler for Game<'_> {
+@@ -11441,7 +11517,7 @@ impl ApplicationHandler for Game<'_> {
                          .as_ref()
                          .map(|r| [r.config.width, r.config.height])
                          .unwrap_or([1, 1]);
@@ -2874,7 +2880,7 @@ index 0937cdc..37fb09b 100644
                      let atlas = &self.gui.atlas;
                      let shift = self.has_shift_down();
                      let (action, sound) = self.title.as_mut().map_or((Action::None, false), |t| {
-@@ -11461,6 +11531,48 @@ impl ApplicationHandler for Game<'_> {
+@@ -11461,6 +11537,48 @@ impl ApplicationHandler for Game<'_> {
                          Action::Language => {
                              self.open_options_at(true, horizon_client::options_ui::Page::Language)
                          }
@@ -2923,7 +2929,7 @@ index 0937cdc..37fb09b 100644
                          Action::Play { folder } => {
                              self.open_world(&folder, None, None, false, None)?
                          }
-@@ -11996,18 +12108,50 @@ impl ApplicationHandler for Game<'_> {
+@@ -11996,18 +12114,50 @@ impl ApplicationHandler for Game<'_> {
              event_loop.exit();
          }
      }
@@ -2976,7 +2982,7 @@ index 0937cdc..37fb09b 100644
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
          if self.pending_save.is_some() {
              match self.poll_closing_save() {
-@@ -12189,6 +12333,10 @@ impl<'a> Game<'a> {
+@@ -12189,6 +12339,10 @@ impl<'a> Game<'a> {
              right: false,
              cursor: (0.0, 0.0),
              cursor_icon: horizon_client::widgets::Cursor::Arrow,
@@ -2987,7 +2993,7 @@ index 0937cdc..37fb09b 100644
              captured: false,
              focused: true,
              modifiers: winit::keyboard::ModifiersState::empty(),
-@@ -13071,6 +13219,12 @@ fn build_renderer(
+@@ -13071,6 +13225,12 @@ fn build_renderer(
          previous,
          api,
      ))?;
@@ -3000,7 +3006,7 @@ index 0937cdc..37fb09b 100644
      renderer.hud.fire_animations = atlas
          .fire_animations
          .iter()
-@@ -13118,6 +13272,10 @@ fn loading_renderer(
+@@ -13118,6 +13278,10 @@ fn loading_renderer(
          api,
      ))?;
      if let Some(atlas) = atlas {
@@ -3011,7 +3017,7 @@ index 0937cdc..37fb09b 100644
          renderer.hud.fire_animations = atlas
              .fire_animations
              .iter()
-@@ -13127,6 +13285,29 @@ fn loading_renderer(
+@@ -13127,6 +13291,29 @@ fn loading_renderer(
      Ok(renderer)
  }
  
@@ -3041,7 +3047,7 @@ index 0937cdc..37fb09b 100644
  /// A title-shaped frame: black clear and panorama, only the HUD is drawn.
  fn loading_frame(hud: &HudBatch) -> Frame<'_> {
      Frame {
-@@ -13308,7 +13489,7 @@ fn start_game<'a>(
+@@ -13308,7 +13495,7 @@ fn start_game<'a>(
          }
          None if handoff => {}
          None => {
@@ -3050,7 +3056,7 @@ index 0937cdc..37fb09b 100644
                  std::env::current_dir()?.join("saves"),
                  &game.options.resources,
              );
-@@ -13373,8 +13554,15 @@ struct Loading {
+@@ -13373,8 +13560,15 @@ struct Loading {
      frames_drawn: u32,
      frames_skipped: u32,
      menu: startup_menu::StartupMenu,
@@ -3066,7 +3072,7 @@ index 0937cdc..37fb09b 100644
  impl Loading {
      fn resumed(&mut self, event_loop: &ActiveEventLoop) {
          if self.window.is_some() {
-@@ -13496,8 +13684,28 @@ impl Loading {
+@@ -13496,8 +13690,28 @@ impl Loading {
          else {
              return;
          };
@@ -3096,7 +3102,7 @@ index 0937cdc..37fb09b 100644
          let mut frame = loading_frame(&batch);
          frame.yaw = self.panorama_rotation.update(
              self.started.elapsed().as_secs_f32(),
-@@ -13541,6 +13749,16 @@ impl Loading {
+@@ -13541,6 +13755,16 @@ impl Loading {
          let window = self.window.clone().ok_or("window closed")?;
          // Keep the loader's device and swap in the real textures in one step.
          if let Some(renderer) = &mut self.renderer {
@@ -3113,7 +3119,7 @@ index 0937cdc..37fb09b 100644
              renderer.release_surface();
          }
          let renderer_at = Instant::now();
-@@ -13624,8 +13842,9 @@ impl ApplicationHandler for App {
+@@ -13624,8 +13848,9 @@ impl ApplicationHandler for App {
          }
      }
      fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
@@ -3125,7 +3131,7 @@ index 0937cdc..37fb09b 100644
          }
      }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-@@ -13713,6 +13932,10 @@ fn run_loading(
+@@ -13713,6 +13938,10 @@ fn run_loading(
          frames_drawn: 0,
          frames_skipped: 0,
          menu,
