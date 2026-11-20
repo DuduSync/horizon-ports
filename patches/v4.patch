@@ -2692,7 +2692,7 @@ index 1903cab..3a453af 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..20a1dcf 100644
+index 0937cdc..23f070d 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -3072,7 +3072,7 @@ index 0937cdc..20a1dcf 100644
  impl Loading {
      fn resumed(&mut self, event_loop: &ActiveEventLoop) {
          if self.window.is_some() {
-@@ -13496,8 +13690,28 @@ impl Loading {
+@@ -13496,8 +13690,23 @@ impl Loading {
          else {
              return;
          };
@@ -3091,18 +3091,13 @@ index 0937cdc..20a1dcf 100644
 +                } else {
 +                    (1.0 - (idle - 2.0) / 0.5).clamp(0.0, 1.0)
 +                };
-+                paint_mouse_cursor(
-+                    &gui.atlas,
-+                    &mut batch,
-+                    self.menu.cursor,
-+                    opacity,
-+                );
++                paint_mouse_cursor(&gui.atlas, &mut batch, self.menu_cursor(), opacity);
 +            }
 +        }
          let mut frame = loading_frame(&batch);
          frame.yaw = self.panorama_rotation.update(
              self.started.elapsed().as_secs_f32(),
-@@ -13541,6 +13755,16 @@ impl Loading {
+@@ -13541,6 +13750,16 @@ impl Loading {
          let window = self.window.clone().ok_or("window closed")?;
          // Keep the loader's device and swap in the real textures in one step.
          if let Some(renderer) = &mut self.renderer {
@@ -3119,7 +3114,7 @@ index 0937cdc..20a1dcf 100644
              renderer.release_surface();
          }
          let renderer_at = Instant::now();
-@@ -13624,8 +13848,9 @@ impl ApplicationHandler for App {
+@@ -13624,8 +13843,9 @@ impl ApplicationHandler for App {
          }
      }
      fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
@@ -3131,7 +3126,7 @@ index 0937cdc..20a1dcf 100644
          }
      }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-@@ -13713,6 +13938,10 @@ fn run_loading(
+@@ -13713,6 +13933,10 @@ fn run_loading(
          frames_drawn: 0,
          frames_skipped: 0,
          menu,
@@ -3182,7 +3177,7 @@ index 8712722..a77600b 100644
  
      /// Focus mode is on for the open screen.
 diff --git a/crates/horizon-client/src/game/startup_menu.rs b/crates/horizon-client/src/game/startup_menu.rs
-index cf301ac..38645c7 100644
+index cf301ac..8646bea 100644
 --- a/crates/horizon-client/src/game/startup_menu.rs
 +++ b/crates/horizon-client/src/game/startup_menu.rs
 @@ -5,7 +5,10 @@ use horizon_client::{
@@ -3206,7 +3201,7 @@ index cf301ac..38645c7 100644
                  std::env::current_dir().unwrap_or_default().join("saves"),
                  &self.root,
              );
-@@ -288,14 +291,66 @@ impl Loading {
+@@ -288,14 +291,71 @@ impl Loading {
          self.update_menu_cursor();
      }
  
@@ -3228,6 +3223,11 @@ index cf301ac..38645c7 100644
 +        } else {
 +            HudBatch::new(size)
 +        }
++    }
++
++    /// The menu pointer in the frame's space, for the mouse cursor overlay.
++    pub(super) fn menu_cursor(&self) -> (f32, f32) {
++        self.menu.cursor
 +    }
 +
      fn update_menu_cursor(&mut self) {
@@ -3274,7 +3274,7 @@ index cf301ac..38645c7 100644
      fn menu_size(&self) -> [u32; 2] {
          self.renderer
              .as_ref()
-@@ -422,6 +477,51 @@ impl Loading {
+@@ -422,6 +482,51 @@ impl Loading {
              Action::Options => self.open_menu_options(Page::Main),
              Action::Accessibility => self.open_menu_options(Page::Accessibility),
              Action::Language => self.open_menu_options(Page::Language),
@@ -3326,7 +3326,7 @@ index cf301ac..38645c7 100644
              action => {
                  let name = self
                      .options
-@@ -464,6 +564,7 @@ impl Loading {
+@@ -464,6 +569,7 @@ impl Loading {
                  self.menu.modifiers = ModifiersState::empty();
                  self.menu.physical_keys.clear();
                  self.menu.dragging = false;
@@ -3334,7 +3334,7 @@ index cf301ac..38645c7 100644
                  if let Some(title) = &mut self.menu.title {
                      title.release();
                      title.release_field();
-@@ -494,19 +595,31 @@ impl Loading {
+@@ -494,19 +600,31 @@ impl Loading {
              }
              WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
                  if self.menu.win.is_some() => {}
@@ -3377,7 +3377,7 @@ index cf301ac..38645c7 100644
                  }
              }
              WindowEvent::MouseInput { state, button, .. } if self.menu.options_open => {
-@@ -529,7 +642,7 @@ impl Loading {
+@@ -529,7 +647,7 @@ impl Loading {
                  button: MouseButton::Left,
                  ..
              } => {
@@ -3386,7 +3386,7 @@ index cf301ac..38645c7 100644
                  if let (Some(title), Some(gui)) = (&mut self.menu.title, &self.gui) {
                      if state == ElementState::Released {
                          title.release();
-@@ -560,7 +673,7 @@ impl Loading {
+@@ -560,7 +678,7 @@ impl Loading {
                  } else {
                      raw
                  } * self.settings.mouse_wheel_sensitivity;
@@ -3395,7 +3395,7 @@ index cf301ac..38645c7 100644
                  if self.menu.options_open {
                      self.menu.options.scroll_at(
                          &self.settings,
-@@ -628,6 +741,7 @@ impl Loading {
+@@ -628,6 +746,7 @@ impl Loading {
                  .draw(&self.settings, batch, &gui.atlas, self.menu.cursor);
          } else if let Some(title) = &mut self.menu.title {
              title.poll_backup();
