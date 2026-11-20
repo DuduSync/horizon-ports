@@ -64,7 +64,7 @@ jobs:
             sed -e "s|@SWITCH_DIR@|$SWITCH_DIR|g" -e "s|@SWITCH_BUILD@|$SWITCH_BUILD|g" \
                 -e "s|@DEVKITPRO@|$DEVKITPRO|g" \
                 switch/cargo-config.toml > "$SWITCH_BUILD/cargo-config.toml"
-            cargo +"$RUST_TOOLCHAIN" check --release \
+            NX_BUILD=0000 cargo +"$RUST_TOOLCHAIN" check --release \
               --config "$SWITCH_BUILD/cargo-config.toml" \
               -p horizon-client --no-default-features --features audio --bin horizon-client
           '

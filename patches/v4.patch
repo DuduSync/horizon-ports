@@ -2692,7 +2692,7 @@ index 1903cab..3a453af 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..23f070d 100644
+index 0937cdc..f362778 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -2718,7 +2718,7 @@ index 0937cdc..23f070d 100644
                  self.cursor = (size[0] as f32 / 2.0 / scale, size[1] as f32 / 2.0 / scale);
              } else {
                  let _ = window.set_cursor_grab(CursorGrabMode::None);
-@@ -4974,13 +4981,26 @@ impl Game<'_> {
+@@ -4974,13 +4981,46 @@ impl Game<'_> {
          draws.push(hud_layout::GuiDraw::Pop);
          hud_layout::paint(batch, &self.gui.atlas, &draws);
      }
@@ -2735,6 +2735,26 @@ index 0937cdc..23f070d 100644
 +            HudBatch::new(size)
 +        }
 +    }
++    /// Move the menu pointer from a raw HID report. `dx`/`dy` are in the
++    /// HID's 1280x720 pixels, so docked motion scales with the window; the
++    /// speed is the launcher's `cursorSpeed` setting.
++    fn move_menu_cursor(&mut self, dx: f64, dy: f64) {
++        let Some(size) = self
++            .renderer
++            .as_ref()
++            .map(|r| [r.config.width, r.config.height])
++        else {
++            return;
++        };
++        let batch = self.ui_batch(size);
++        let dpi = size[0] as f32 / 1280.0;
++        let speed = self.settings.horizon.cursor_speed as f32 / 100.0;
++        let step = dpi * speed / batch.scale;
++        self.cursor.0 =
++            (self.cursor.0 + dx as f32 * step).clamp(0.0, (batch.width - 1.0).max(0.0));
++        self.cursor.1 =
++            (self.cursor.1 + dy as f32 * step).clamp(0.0, (batch.height - 1.0).max(0.0));
++    }
      fn hud(&mut self, size: [u32; 2]) -> HudBatch {
          // The pack prompt replaces the connecting screen (setScreen), but
          // in game it opens over the world.
@@ -2746,7 +2766,7 @@ index 0937cdc..23f070d 100644
          } else {
              horizon_client::spans::time("hud_layers", || self.hud_layers(size))
          };
-@@ -4992,10 +5012,32 @@ impl Game<'_> {
+@@ -4992,10 +5032,32 @@ impl Game<'_> {
          self.frame_graph
              .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
          horizon_client::spans::time("hud_draw_pad_cursor", || self.draw_pad_cursor(&mut batch));
@@ -2780,7 +2800,7 @@ index 0937cdc..23f070d 100644
          let (w, h) = (batch.width, batch.height);
          if self.screen == Screen::Win {
              horizon_client::spans::time("hl_draw_win_screen", || self.draw_win_screen(&mut batch));
-@@ -5007,6 +5049,7 @@ impl Game<'_> {
+@@ -5007,6 +5069,7 @@ impl Game<'_> {
          }
          if let Some(title) = &mut self.title {
              title.poll_backup();
@@ -2788,7 +2808,7 @@ index 0937cdc..23f070d 100644
              if let Some(sound) = title.update_toast(self.settings.notification_display_time) {
                  self.audio.play(sound, None, 1.0, 1.0);
              }
-@@ -11159,6 +11202,7 @@ impl ApplicationHandler for Game<'_> {
+@@ -11159,6 +11222,7 @@ impl ApplicationHandler for Game<'_> {
          }
          if let WindowEvent::Focused(false) = &event {
              self.physical_keys.clear();
@@ -2796,7 +2816,7 @@ index 0937cdc..23f070d 100644
          }
          if let WindowEvent::ModifiersChanged(m) = &event {
              self.modifiers = m.state();
-@@ -11202,6 +11246,21 @@ impl ApplicationHandler for Game<'_> {
+@@ -11202,6 +11266,21 @@ impl ApplicationHandler for Game<'_> {
          ) {
              self.last_input = Instant::now();
          }
@@ -2818,7 +2838,7 @@ index 0937cdc..23f070d 100644
          if (self.pending_entry.is_some() || self.world_loader.is_some())
              && matches!(&event, WindowEvent::KeyboardInput { event, .. }
                  if event.state == ElementState::Pressed
-@@ -11284,10 +11343,27 @@ impl ApplicationHandler for Game<'_> {
+@@ -11284,10 +11363,27 @@ impl ApplicationHandler for Game<'_> {
                          }
                      }
                  }
@@ -2849,7 +2869,7 @@ index 0937cdc..23f070d 100644
                          if self.screen == Screen::Advancements {
                              self.advancements_drag();
                          }
-@@ -11335,16 +11411,16 @@ impl ApplicationHandler for Game<'_> {
+@@ -11335,16 +11431,16 @@ impl ApplicationHandler for Game<'_> {
                      let d = scaled(raw_y) as f32;
                      if self.dialog_open() {
                          self.dialog_scroll(d);
@@ -2871,7 +2891,7 @@ index 0937cdc..23f070d 100644
                      }
                      if self.screen == Screen::Playing
                          && self.sleeping.is_none()
-@@ -11441,7 +11517,7 @@ impl ApplicationHandler for Game<'_> {
+@@ -11441,7 +11537,7 @@ impl ApplicationHandler for Game<'_> {
                          .as_ref()
                          .map(|r| [r.config.width, r.config.height])
                          .unwrap_or([1, 1]);
@@ -2880,7 +2900,7 @@ index 0937cdc..23f070d 100644
                      let atlas = &self.gui.atlas;
                      let shift = self.has_shift_down();
                      let (action, sound) = self.title.as_mut().map_or((Action::None, false), |t| {
-@@ -11461,6 +11537,48 @@ impl ApplicationHandler for Game<'_> {
+@@ -11461,6 +11557,48 @@ impl ApplicationHandler for Game<'_> {
                          Action::Language => {
                              self.open_options_at(true, horizon_client::options_ui::Page::Language)
                          }
@@ -2929,7 +2949,7 @@ index 0937cdc..23f070d 100644
                          Action::Play { folder } => {
                              self.open_world(&folder, None, None, false, None)?
                          }
-@@ -11996,18 +12114,50 @@ impl ApplicationHandler for Game<'_> {
+@@ -11996,16 +12134,28 @@ impl ApplicationHandler for Game<'_> {
              event_loop.exit();
          }
      }
@@ -2959,29 +2979,7 @@ index 0937cdc..23f070d 100644
 +            self.move_menu_cursor(x, y);
          }
      }
-+    /// Move the menu pointer from a raw HID report. `delta` is in the HID's
-+    /// 1280x720 pixels, so docked motion scales with the window; the speed
-+    /// is the launcher's `cursorSpeed` setting.
-+    fn move_menu_cursor(&mut self, dx: f64, dy: f64) {
-+        let Some(size) = self
-+            .renderer
-+            .as_ref()
-+            .map(|r| [r.config.width, r.config.height])
-+        else {
-+            return;
-+        };
-+        let batch = self.ui_batch(size);
-+        let dpi = size[0] as f32 / 1280.0;
-+        let speed = self.settings.horizon.cursor_speed as f32 / 100.0;
-+        let step = dpi * speed / batch.scale;
-+        self.cursor.0 =
-+            (self.cursor.0 + dx as f32 * step).clamp(0.0, (batch.width - 1.0).max(0.0));
-+        self.cursor.1 =
-+            (self.cursor.1 + dy as f32 * step).clamp(0.0, (batch.height - 1.0).max(0.0));
-+    }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-         if self.pending_save.is_some() {
-             match self.poll_closing_save() {
 @@ -12189,6 +12339,10 @@ impl<'a> Game<'a> {
              right: false,
              cursor: (0.0, 0.0),
