@@ -2554,7 +2554,7 @@ index 0000000..b413d8e
 +    assert!(super::super::current().is_none());
 +}
 diff --git a/crates/horizon-client/src/font.rs b/crates/horizon-client/src/font.rs
-index 1903cab..3a453af 100644
+index 1903cab..37b2b65 100644
 --- a/crates/horizon-client/src/font.rs
 +++ b/crates/horizon-client/src/font.rs
 @@ -91,6 +91,9 @@ struct TrueType {
@@ -2620,7 +2620,7 @@ index 1903cab..3a453af 100644
 +    /// never point at texels the new raster overwrote.
 +    pub fn add_ttf_font(&self, id: &str, data: &[u8], size: f32, density: f32) {
 +        let density = density.clamp(1.0, 4.0);
-+        let mut cache = self.cache.borrow_mut();
++        let cache = self.cache.borrow_mut();
 +        if let Some((_, set)) = cache.sets.iter().find(|(known, _)| known == id)
 +            && set.providers.iter().any(
 +                |p| matches!(p, Provider::TrueType(_, t) if (t.metrics - density).abs() < 0.01),
@@ -2692,7 +2692,7 @@ index 1903cab..3a453af 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..cabd1dc 100644
+index 0937cdc..2ad3ca1 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -2825,12 +2825,12 @@ index 0937cdc..cabd1dc 100644
 +            self.settings.render_distance = self
 +                .settings
 +                .render_distance
-+                .clamp(2, crate::settings::max_render_distance());
++                .clamp(2, horizon_client::settings::max_render_distance());
 +            self.settings.horizon.lod_distance = self
 +                .settings
 +                .horizon
 +                .lod_distance
-+                .min(crate::settings::max_lod_distance());
++                .min(horizon_client::settings::max_lod_distance());
 +        }
          // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
          let abilities = self.chat_abilities();
