@@ -3923,7 +3923,7 @@ index cf301ac..3f42e61 100644
 +        if dx != 0.0 || dy != 0.0 {
 +            self.menu.cursor.0 = (self.menu.cursor.0 + dx).clamp(0.0, (w - 1.0).max(0.0));
 +            self.menu.cursor.1 = (self.menu.cursor.1 + dy).clamp(0.0, (h - 1.0).max(0.0));
-+            self.menu.pointer = (self.menu.cursor.0 * scale, self.menu.cursor.1 * scale);
++            self.menu.pointer = (f64::from(self.menu.cursor.0 * scale), f64::from(self.menu.cursor.1 * scale));
 +            // Show the pointer while the pad is in use; the mouse fade
 +            // handles hiding it again.
 +            self.mouse_seen = true;
