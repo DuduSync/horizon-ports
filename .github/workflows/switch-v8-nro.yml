@@ -118,7 +118,7 @@ jobs:
           set -eux
           mkdir -p out
           docker run --rm -v "$PWD/makrsas:/work" -v "$PWD/out:/out" -w /work horizon-build bash -lc '
-            nacptool --create "Horizon V8" "Horizon contributors" "0.1.1-v8" /tmp/horizon.nacp --titleid=0100485952450000
+            nacptool --create "Horizon" "Horizon" "0.1.8" /tmp/horizon.nacp --titleid=0100485952450000
             elf2nro switch/build/horizon.elf /out/Horizon-v8.nro --icon=switch/icon.jpg --nacp=/tmp/horizon.nacp
           '
           ls -lh out
