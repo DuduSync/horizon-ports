@@ -1,5 +1,9 @@
 # Building the Switch NRO
 
+## Switch distribution
+
+The console gets exactly **one** file: `/switch/Horizon.nro`. Each build overwrites it, and it is launched from the hbmenu. Versioned NROs and NSPs are no longer packaged or uploaded; the NSP instructions below are kept for legacy builds only. The build watcher is `watch_nro.py` (`RUN_ID` + `NRO_PREFIX`), which uploads the NRO to the stable path and removes old `Horizon-*.nro`/`Horizon-*.nsp` files.
+
 The port is built from the upstream `MakrSas/horizon-switch` v0.1.1 plus three patches in `patches/`:
 
 1. `launcher-mvp.patch` — integrated dashboard, worlds, account placeholder, settings, offline name, pt-BR.
@@ -17,9 +21,9 @@ The audio backend comes from `tarkodev/horizon-switch`'s patched `cpal` (libnx `
 
 The CI uses the prebuilt `devkitpro/devkita64` image (with all portlibs) and skips `dkp-pacman -Syu`, because `pkg.devkitpro.org` returns 403 to GitHub runners. The game toolchain is nightly `2026-10-25`, the one the v0.1.1 `std.patch` expects.
 
-## Local NSP packaging
+## Local NSP packaging (legacy)
 
-An NSP needs the console's `prod.keys` (never commit it). Use the ELF artifact with `hacbrewpack`:
+The current Switch flow is NRO-only. This section is kept for older builds that still use an installed NSP. An NSP needs the console's `prod.keys` (never commit it). Use the ELF artifact with `hacbrewpack`:
 
 ```sh
 # inside a Linux environment with switch-tools and hacbrewpack
