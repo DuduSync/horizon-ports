@@ -4456,10 +4456,10 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..2b06df8
+index 0000000..9cea244
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
-@@ -0,0 +1,2724 @@
+@@ -0,0 +1,2743 @@
 +//! The Switch launcher: a separate, dark screen shown before the Minecraft
 +//! title. Pressing Play changes `Title::Mode::Launcher` to the original
 +//! `Title::Mode::Main`; the game's own title is untouched.
@@ -5021,6 +5021,25 @@ index 0000000..2b06df8
 +            self.install_status = Some(tr("mods_not_installable").to_owned());
 +            return Action::None;
 +        };
++        // A shader pack written for a newer shader API would install and then
++        // fail to load; say so before the download.
++        if project.kind == Kind::Shader
++            && !version.api.is_empty()
++            && version.api != horizon_shader_api::manifest::API
++        {
++            log::warn!(
++                "Horizon: shader {} needs API {}, this build serves {}",
++                project.id,
++                version.api,
++                horizon_shader_api::manifest::API
++            );
++            self.install_status = Some(format!(
++                "Shader API {} required (this build: {})",
++                version.api,
++                horizon_shader_api::manifest::API
++            ));
++            return Action::None;
++        }
 +        let Some(dir) = self.destination(&project.kind) else {
 +            log::warn!(
 +                "Horizon: mod install {}: unsupported kind {}",
@@ -7489,7 +7508,7 @@ index de33de1..b9779ed 100644
          settings
      }
 diff --git a/crates/horizon-client/src/title.rs b/crates/horizon-client/src/title.rs
-index a696781..7f74fd3 100644
+index a696781..375c688 100644
 --- a/crates/horizon-client/src/title.rs
 +++ b/crates/horizon-client/src/title.rs
 @@ -73,6 +73,8 @@ pub struct WorldEntry {
@@ -7575,7 +7594,7 @@ index a696781..7f74fd3 100644
 +    }
 +    /// The screen's name for a diagnostic capture.
 +    pub fn capture_hint(&self) -> Option<&'static str> {
-+        if self.mode == Mode::Launcher {
++        if matches!(self.mode, Mode::Launcher) {
 +            self.launcher.as_ref().map(crate::launcher_v2::Launcher::capture_hint)
 +        } else {
 +            Some("minecraft-title")
