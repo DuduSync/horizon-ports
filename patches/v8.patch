@@ -2706,7 +2706,7 @@ index 1903cab..37b2b65 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..ba1d369 100644
+index 0937cdc..0f515b3 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -3119,6 +3119,15 @@ index 0937cdc..ba1d369 100644
  ) -> Result<Loaded> {
      let requested_root = root.clone();
      let threads = settings.horizon.worker_threads();
+@@ -12747,7 +12957,7 @@ fn load_resources(
+             log::warn!("Horizon: resource packs failed to load ({e}); using the default resources");
+             pack_error = Some(e.to_string());
+             root = vanilla_root.to_path_buf();
+-            None
++            UiResources::load(&root, vanilla_root).ok()
+         }
+         Err(_) => None,
+     };
 @@ -12764,6 +12974,14 @@ fn load_resources(
          }
          ui_ready = true;
@@ -3237,52 +3246,10 @@ index 0937cdc..ba1d369 100644
  impl Loading {
      fn resumed(&mut self, event_loop: &ActiveEventLoop) {
          if self.window.is_some() {
-@@ -13473,12 +13738,59 @@ impl Loading {
+@@ -13473,12 +13738,17 @@ impl Loading {
              building.elapsed().as_millis()
          );
      }
-+    /// The pad in the launcher/title before the game exists: the left stick
-+    /// and D-pad move the pointer, A clicks, B goes back.
-+    fn poll_menu_pad(&mut self, event_loop: &ActiveEventLoop) {
-+        if self.gui.is_none() || self.menu.title.is_none() || self.menu.pending.is_some() {
-+            return;
-+        }
-+        let deadzone = self.settings.controller.move_deadzone;
-+        let Some(frame) = self.menu_pad.read(deadzone) else {
-+            return;
-+        };
-+        let (w, h, scale) = {
-+            let batch = self.ui_batch();
-+            (batch.width, batch.height, batch.scale)
-+        };
-+        let (dx, dy) = frame.dpad.unwrap_or([frame.dx, frame.dy]);
-+        if dx != 0.0 || dy != 0.0 {
-+            self.menu.cursor.0 = (self.menu.cursor.0 + dx).clamp(0.0, (w - 1.0).max(0.0));
-+            self.menu.cursor.1 = (self.menu.cursor.1 + dy).clamp(0.0, (h - 1.0).max(0.0));
-+            self.menu.pointer = (self.menu.cursor.0 * scale, self.menu.cursor.1 * scale);
-+            // Show the pointer while the pad is in use; the mouse fade
-+            // handles hiding it again.
-+            self.mouse_seen = true;
-+            self.mouse_last = Instant::now();
-+        }
-+        if frame.back {
-+            self.menu.back();
-+        }
-+        if frame.click {
-+            for state in [ElementState::Pressed, ElementState::Released] {
-+                let event = WindowEvent::MouseInput {
-+                    device_id: DeviceId::dummy(),
-+                    state,
-+                    button: MouseButton::Left,
-+                };
-+                if let Err(error) = self.menu_event(event_loop, event) {
-+                    self.error = Some(error);
-+                    event_loop.exit();
-+                    return;
-+                }
-+            }
-+        }
-+    }
 +
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
          if let Err(error) = self.poll_menu_resources() {
@@ -3297,7 +3264,7 @@ index 0937cdc..ba1d369 100644
          if let Some(w) = &self.window {
              if self.options.as_ref().is_some_and(|o| o.offscreen) {
                  self.draw();
-@@ -13496,13 +13808,61 @@ impl Loading {
+@@ -13496,13 +13766,61 @@ impl Loading {
          else {
              return;
          };
@@ -3345,7 +3312,7 @@ index 0937cdc..ba1d369 100644
 +        // screen and of the original title in `captures/`, so the layout can
 +        // be inspected over FTP.
 +        if cfg!(target_os = "horizon") {
-+            let hint = self.menu.title.as_ref().and_then(Title::capture_hint);
++            let hint = self.menu.capture_hint();
 +            if let (Some(hint), Some(renderer)) = (hint, self.renderer.as_mut())
 +                && !self.captured.contains(hint)
 +            {
@@ -3361,7 +3328,7 @@ index 0937cdc..ba1d369 100644
          if let Some(renderer) = &mut self.renderer {
              match renderer.render(&frame) {
                  Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-@@ -13541,6 +13901,20 @@ impl Loading {
+@@ -13541,6 +13859,20 @@ impl Loading {
          let window = self.window.clone().ok_or("window closed")?;
          // Keep the loader's device and swap in the real textures in one step.
          if let Some(renderer) = &mut self.renderer {
@@ -3382,7 +3349,7 @@ index 0937cdc..ba1d369 100644
              renderer.release_surface();
          }
          let renderer_at = Instant::now();
-@@ -13624,8 +13998,9 @@ impl ApplicationHandler for App {
+@@ -13624,8 +13956,9 @@ impl ApplicationHandler for App {
          }
      }
      fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
@@ -3394,7 +3361,7 @@ index 0937cdc..ba1d369 100644
          }
      }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-@@ -13690,7 +14065,7 @@ fn run_loading(
+@@ -13690,7 +14023,7 @@ fn run_loading(
      started: Instant,
  ) -> Result<()> {
      let progress = Progress::new();
@@ -3403,7 +3370,7 @@ index 0937cdc..ba1d369 100644
          startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
      let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
      let loading = Loading {
-@@ -13708,11 +14083,18 @@ fn run_loading(
+@@ -13708,11 +14041,18 @@ fn run_loading(
          receiver,
          loaded: None,
          handle: Some(loader),
@@ -3422,7 +3389,7 @@ index 0937cdc..ba1d369 100644
          error: None,
      };
      let mut app = App::Loading(Box::new(loading));
-@@ -13802,6 +14184,7 @@ pub fn run() -> Result<()> {
+@@ -13802,6 +14142,7 @@ pub fn run() -> Result<()> {
          false,
          &Progress::new(),
          &mut |_, _| {},
@@ -3609,10 +3576,20 @@ index 243eced..dabc498 100644
      /// `Minecraft.runTick`'s frame limiter: `FramerateLimiter.limitDisplayFPS`
      /// below 260 frames per second, sleeping then spin-waiting until the
 diff --git a/crates/horizon-client/src/game/pad.rs b/crates/horizon-client/src/game/pad.rs
-index b32b07c..43a11f8 100644
+index b32b07c..ed8387c 100644
 --- a/crates/horizon-client/src/game/pad.rs
 +++ b/crates/horizon-client/src/game/pad.rs
-@@ -91,6 +91,16 @@ impl Pads {
+@@ -51,6 +51,9 @@ pub(super) struct Pads {
+     last_rumble: Option<(&'static str, gamepad::Pulse)>,
+     /// The player's health between polls (a drop is damage taken).
+     health: HealthWatch,
++    /// Frames to ignore after focus returns, so a stale HID report from the
++    /// suspend cannot fire a trigger before the pad reports its real state.
++    settle: u8,
+ }
+ 
+ #[cfg(all(feature = "controllers", not(target_os = "horizon")))]
+@@ -91,6 +94,17 @@ impl Pads {
      pub(super) fn player_replaced(&mut self) {
          self.health.forget();
      }
@@ -3625,11 +3602,12 @@ index b32b07c..43a11f8 100644
 +        self.state = PadState::default();
 +        self.virtual_input = false;
 +        self.edges = Edges::default();
++        self.settle = 5;
 +    }
  }
  
  impl Game<'_> {
-@@ -109,6 +119,7 @@ impl Game<'_> {
+@@ -109,6 +123,7 @@ impl Game<'_> {
          }
          let hardware = self.pad.read();
          self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
@@ -3637,11 +3615,19 @@ index b32b07c..43a11f8 100644
          let state = hardware.merge(&self.pad.injected);
          self.pad.virtual_input = self.pad.injected != PadState::default();
          for button in std::mem::take(&mut self.pad.taps) {
-@@ -116,7 +127,9 @@ impl Game<'_> {
+@@ -116,7 +131,17 @@ impl Game<'_> {
          }
          let threshold = self.settings.controller.trigger_threshold;
          let edges = self.pad.edges.update(&state, threshold);
 -        if state.active(&self.settings.controller) {
++        if self.pad.settle > 0 {
++            // The applet just came back: learn the real state without acting
++            // on it for a few frames.
++            self.pad.settle -= 1;
++            self.pad.state = state;
++            self.pad_output_frame();
++            return;
++        }
 +        // Any change counts as input, not only a stick past the deadzone: a
 +        // small nudge or a trigger tap must reset the AFK frame limit.
 +        if state != previous || state.active(&self.settings.controller) {
@@ -3701,7 +3687,7 @@ index 8712722..5dd5b4c 100644
              let white = rgba(255, 255, 255, 255);
              batch.fill(atlas, x, y, w, 1.0, white);
 diff --git a/crates/horizon-client/src/game/startup_menu.rs b/crates/horizon-client/src/game/startup_menu.rs
-index cf301ac..5aa8354 100644
+index cf301ac..3f42e61 100644
 --- a/crates/horizon-client/src/game/startup_menu.rs
 +++ b/crates/horizon-client/src/game/startup_menu.rs
 @@ -5,7 +5,10 @@ use horizon_client::{
@@ -3725,7 +3711,7 @@ index cf301ac..5aa8354 100644
                  std::env::current_dir().unwrap_or_default().join("saves"),
                  &self.root,
              );
-@@ -203,6 +206,78 @@ impl StartupMenu {
+@@ -203,6 +206,88 @@ impl StartupMenu {
      }
  }
  
@@ -3748,6 +3734,16 @@ index cf301ac..5aa8354 100644
 +}
 +
 +impl MenuPad {
++    /// Forget held buttons after a focus change; the next report is a new
++    /// baseline, not a press.
++    pub fn reset(&mut self) {
++        #[cfg(target_os = "horizon")]
++        {
++            self.buttons = 0;
++            self.last = None;
++        }
++    }
++
 +    /// One reading, in GUI pixels: stick movement, a D-pad step, A (click)
 +    /// and B (back). `None` when no pad is connected.
 +    pub fn read(&mut self, deadzone: f32) -> Option<PadFrame> {
@@ -3804,7 +3800,7 @@ index cf301ac..5aa8354 100644
  /// Each generation has its own channel and progress. Pack changes wait for the
  /// old tail before starting another generation, including cache/global writes.
  pub(super) fn spawn_loader(
-@@ -211,12 +286,15 @@ pub(super) fn spawn_loader(
+@@ -211,12 +296,15 @@ pub(super) fn spawn_loader(
      vanilla_root: &std::path::Path,
      started: Instant,
      progress: &Progress,
@@ -3821,7 +3817,7 @@ index cf301ac..5aa8354 100644
      let handle = std::thread::Builder::new()
          .name("resource-loader".into())
          .spawn(move || {
-@@ -226,7 +304,6 @@ pub(super) fn spawn_loader(
+@@ -226,7 +314,6 @@ pub(super) fn spawn_loader(
                      pack_error = Some(error.to_string());
                      vanilla_root.clone()
                  });
@@ -3829,7 +3825,7 @@ index cf301ac..5aa8354 100644
              let result = load_resources(
                  root,
                  &vanilla_root,
-@@ -237,6 +314,26 @@ pub(super) fn spawn_loader(
+@@ -237,6 +324,41 @@ pub(super) fn spawn_loader(
                  &mut |gui, root| {
                      let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
                  },
@@ -3839,9 +3835,24 @@ index cf301ac..5aa8354 100644
 +                    if !auto_start && start_wait.recv().is_err() {
 +                        return false;
 +                    }
-+                    // Mods installed or toggled in the launcher are read here,
-+                    // after Play, so the game starts with them applied.
++                    // Mods and resource packs installed or changed in the
++                    // launcher are read here, after Play, so the game starts
++                    // with them applied.
 +                    let fresh = Settings::load(&home.join("options.txt"));
++                    let mut ui_stable = true;
++                    if fresh.resource_packs != settings.resource_packs {
++                        match packs::startup_root(&vanilla_root, &fresh.resource_packs, &[]) {
++                            Ok(base) => {
++                                *root = base;
++                                // The pack's textures change the UI too, so
++                                // let the loader publish the rebuilt bundle.
++                                ui_stable = false;
++                            }
++                            Err(e) => log::warn!(
++                                "Horizon: resource packs changed in the launcher: {e}"
++                            ),
++                        }
++                    }
 +                    let modded = mods::content_root(root, &fresh.mods.enabled, &dev_mods);
 +                    let changed = modded != *root;
 +                    if changed {
@@ -3851,12 +3862,12 @@ index cf301ac..5aa8354 100644
 +                        );
 +                    }
 +                    *root = modded;
-+                    changed
++                    ui_stable
 +                },
              )
              .map(|mut loaded| {
                  loaded.pack_error = loaded.pack_error.or(pack_error);
-@@ -245,7 +342,7 @@ pub(super) fn spawn_loader(
+@@ -245,7 +367,7 @@ pub(super) fn spawn_loader(
              .map_err(|error| error.to_string());
              let _ = sender.send(LoaderMsg::Done(result));
          })?;
@@ -3865,7 +3876,7 @@ index cf301ac..5aa8354 100644
  }
  
  impl Loading {
-@@ -270,8 +367,30 @@ impl Loading {
+@@ -270,8 +392,73 @@ impl Loading {
          }
          self.restart_menu_resources()
      }
@@ -3873,7 +3884,7 @@ index cf301ac..5aa8354 100644
 -        if let Some(renderer) = &mut self.renderer {
 +    /// B on the pad: close the top screen, as Escape does.
 +    pub(super) fn back(&mut self) {
-+        if self.options_open {
++        if self.menu.options_open {
 +            let events = self.menu.options.release();
 +            self.menu_option_events(events);
 +            self.menu.options_open = false;
@@ -3894,11 +3905,54 @@ index cf301ac..5aa8354 100644
 +        }
 +    }
 +
++    /// The pad in the launcher/title before the game exists: the left stick
++    /// and D-pad move the pointer, A clicks, B goes back.
++    pub(super) fn poll_menu_pad(&mut self, event_loop: &ActiveEventLoop) {
++        if self.gui.is_none() || self.menu.title.is_none() || self.menu.pending.is_some() {
++            return;
++        }
++        let deadzone = self.settings.controller.move_deadzone;
++        let Some(frame) = self.menu_pad.read(deadzone) else {
++            return;
++        };
++        let (w, h, scale) = {
++            let batch = self.ui_batch();
++            (batch.width, batch.height, batch.scale)
++        };
++        let [dx, dy] = frame.dpad.unwrap_or([frame.dx, frame.dy]);
++        if dx != 0.0 || dy != 0.0 {
++            self.menu.cursor.0 = (self.menu.cursor.0 + dx).clamp(0.0, (w - 1.0).max(0.0));
++            self.menu.cursor.1 = (self.menu.cursor.1 + dy).clamp(0.0, (h - 1.0).max(0.0));
++            self.menu.pointer = (self.menu.cursor.0 * scale, self.menu.cursor.1 * scale);
++            // Show the pointer while the pad is in use; the mouse fade
++            // handles hiding it again.
++            self.mouse_seen = true;
++            self.mouse_last = Instant::now();
++        }
++        if frame.back {
++            self.back();
++        }
++        if frame.click {
++            for state in [ElementState::Pressed, ElementState::Released] {
++                let event = WindowEvent::MouseInput {
++                    device_id: DeviceId::dummy(),
++                    state,
++                    button: MouseButton::Left,
++                };
++                if let Err(error) = self.menu_event(event_loop, event) {
++                    self.error = Some(error);
++                    event_loop.exit();
++                    return;
++                }
++            }
++        }
++    }
++
 +    pub(super) fn apply_menu_settings(&mut self) {        if let Some(renderer) = &mut self.renderer {
              renderer.gamma = self.settings.gamma;
              renderer.set_present_mode(self.settings.vsync, self.settings.horizon.present_mode);
          }
-@@ -288,14 +407,74 @@ impl Loading {
+@@ -288,14 +475,82 @@ impl Loading {
          self.update_menu_cursor();
      }
  
@@ -3911,6 +3965,14 @@ index cf301ac..5aa8354 100644
 +            && self.menu.pending.is_none()
 +            && self.menu.win.is_none()
 +            && !self.menu.options_open
++    }
++
++    /// The current screen's name for an automatic capture.
++    pub(super) fn capture_hint(&self) -> Option<&'static str> {
++        self.menu
++            .title
++            .as_ref()
++            .and_then(Title::capture_hint)
 +    }
 +
 +    fn ui_batch(&self) -> HudBatch {
@@ -3974,7 +4036,7 @@ index cf301ac..5aa8354 100644
      fn menu_size(&self) -> [u32; 2] {
          self.renderer
              .as_ref()
-@@ -422,12 +601,65 @@ impl Loading {
+@@ -422,12 +677,65 @@ impl Loading {
              Action::Options => self.open_menu_options(Page::Main),
              Action::Accessibility => self.open_menu_options(Page::Accessibility),
              Action::Language => self.open_menu_options(Page::Language),
@@ -4040,15 +4102,16 @@ index cf301ac..5aa8354 100644
              }
          }
          self.save_menu_address();
-@@ -464,6 +696,7 @@ impl Loading {
+@@ -464,6 +772,8 @@ impl Loading {
                  self.menu.modifiers = ModifiersState::empty();
                  self.menu.physical_keys.clear();
                  self.menu.dragging = false;
 +                self.mouse_have_pos = false;
++                self.menu_pad.reset();
                  if let Some(title) = &mut self.menu.title {
                      title.release();
                      title.release_field();
-@@ -471,6 +704,10 @@ impl Loading {
+@@ -471,6 +781,10 @@ impl Loading {
                  let events = self.menu.options.release();
                  self.menu_option_events(events);
              }
@@ -4059,7 +4122,7 @@ index cf301ac..5aa8354 100644
              WindowEvent::KeyboardInput { event, .. }
                  if event.state == ElementState::Pressed && self.menu.pending.is_some() =>
              {
-@@ -494,19 +731,31 @@ impl Loading {
+@@ -494,19 +808,31 @@ impl Loading {
              }
              WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
                  if self.menu.win.is_some() => {}
@@ -4102,7 +4165,7 @@ index cf301ac..5aa8354 100644
                  }
              }
              WindowEvent::MouseInput { state, button, .. } if self.menu.options_open => {
-@@ -529,7 +778,7 @@ impl Loading {
+@@ -529,7 +855,7 @@ impl Loading {
                  button: MouseButton::Left,
                  ..
              } => {
@@ -4111,7 +4174,7 @@ index cf301ac..5aa8354 100644
                  if let (Some(title), Some(gui)) = (&mut self.menu.title, &self.gui) {
                      if state == ElementState::Released {
                          title.release();
-@@ -560,7 +809,7 @@ impl Loading {
+@@ -560,7 +886,7 @@ impl Loading {
                  } else {
                      raw
                  } * self.settings.mouse_wheel_sensitivity;
@@ -4120,7 +4183,7 @@ index cf301ac..5aa8354 100644
                  if self.menu.options_open {
                      self.menu.options.scroll_at(
                          &self.settings,
-@@ -628,6 +877,7 @@ impl Loading {
+@@ -628,6 +954,7 @@ impl Loading {
                  .draw(&self.settings, batch, &gui.atlas, self.menu.cursor);
          } else if let Some(title) = &mut self.menu.title {
              title.poll_backup();
@@ -4128,7 +4191,25 @@ index cf301ac..5aa8354 100644
              let _ = title.update_toast(self.settings.notification_display_time);
              title.draw(
                  &gui.atlas,
-@@ -704,6 +954,9 @@ mod tests {
+@@ -660,13 +987,16 @@ impl Loading {
+         }
+         self.progress = Progress::new();
+         let options = self.options.as_ref().ok_or("loading already finished")?;
+-        let (receiver, handle) = spawn_loader(
++        let (receiver, start, handle) = spawn_loader(
+             options,
+             &self.settings,
+             &self.vanilla_root,
+             self.started,
+             &self.progress,
+         )?;
++        // A reload from a settings change is not the launcher waiting for
++        // Play: start the new generation at once.
++        let _ = start.send(());
+         self.receiver = receiver;
+         self.handle = Some(handle);
+         self.menu.reload_packs = false;
+@@ -704,6 +1034,9 @@ mod tests {
              receiver,
              loaded: None,
              handle: None,
@@ -7964,6 +8045,90 @@ index 494e734..3deace1 100644
              }
          }
          let mut ids = BTreeSet::new();
+diff --git a/crates/horizon-nx/src/pad.rs b/crates/horizon-nx/src/pad.rs
+index 6a6072b..83a8ffe 100644
+--- a/crates/horizon-nx/src/pad.rs
++++ b/crates/horizon-nx/src/pad.rs
+@@ -65,7 +65,16 @@ pub struct Snapshot {
+ }
+ 
+ /// Player 1's controllers.
+-pub struct Pad(Box<PadState>);
++pub struct Pad {
++    state: Box<PadState>,
++    /// The raw stick position averaged while it rests, subtracted from every
++    /// reading. The Switch's sticks drift after wear and the system
++    /// calibration does not always remove it.
++    centre: [[f32; 2]; 2],
++    sum: [[f32; 2]; 2],
++    samples: [u32; 2],
++    frames: u32,
++}
+ 
+ impl Pad {
+     pub fn new() -> Self {
+@@ -75,20 +84,57 @@ impl Pad {
+             padConfigureInput(1, STYLES_STANDARD);
+             padInitializeWithMask(&mut *state, PLAYER_ONE);
+         }
+-        Self(state)
++        Self {
++            state,
++            centre: [[0.0; 2]; 2],
++            sum: [[0.0; 2]; 2],
++            samples: [0; 2],
++            frames: 0,
++        }
+     }
+ 
+     pub fn update(&mut self) -> Snapshot {
+         // SAFETY: as above.
+-        unsafe { padUpdate(&mut *self.0) };
+-        let s = &self.0;
++        unsafe { padUpdate(&mut *self.state) };
++        let s = &self.state;
+         let axis = |v: i32| (v as f32 / 32767.0).clamp(-1.0, 1.0);
++        let raw = s.sticks.map(|[x, y]| [axis(x), axis(y)]);
++        // The first two seconds, average the resting position of each stick.
++        // A stick held past 0.35 is being used and is not sampled.
++        if self.frames < 120 {
++            for i in 0..2 {
++                let v = raw[i];
++                if (v[0] * v[0] + v[1] * v[1]).sqrt() < 0.35 {
++                    self.sum[i][0] += v[0];
++                    self.sum[i][1] += v[1];
++                    self.samples[i] += 1;
++                }
++            }
++            self.frames += 1;
++            if self.frames == 120 {
++                for i in 0..2 {
++                    if self.samples[i] > 8 {
++                        self.centre[i] = [
++                            self.sum[i][0] / self.samples[i] as f32,
++                            self.sum[i][1] / self.samples[i] as f32,
++                        ];
++                    }
++                }
++            }
++        }
++        let centred = |i: usize| {
++            let c = self.centre[i];
++            [
++                (raw[i][0] - c[0]).clamp(-1.0, 1.0),
++                (raw[i][1] - c[1]).clamp(-1.0, 1.0),
++            ]
++        };
+         Snapshot {
+             connected: s.attributes & CONNECTED != 0,
+             handheld: s.active_handheld,
+             styles: s.style_set,
+             buttons: s.buttons_cur,
+-            sticks: s.sticks.map(|[x, y]| [axis(x), axis(y)]),
++            sticks: [centred(0), centred(1)],
+         }
+     }
+ }
 diff --git a/crates/horizon-shader-api/src/manifest.rs b/crates/horizon-shader-api/src/manifest.rs
 index d03a4f2..70f203c 100644
 --- a/crates/horizon-shader-api/src/manifest.rs
