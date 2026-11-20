@@ -3272,7 +3272,7 @@ index fa9dbf3..d9b47d5 100644
              Mode::Select {
                  worlds: list,
 diff --git a/crates/horizon-client/src/game/integrated.rs b/crates/horizon-client/src/game/integrated.rs
-index b4e881a..8e9ef42 100644
+index b4e881a..8657e87 100644
 --- a/crates/horizon-client/src/game/integrated.rs
 +++ b/crates/horizon-client/src/game/integrated.rs
 @@ -31,7 +31,7 @@ use std::{
@@ -3365,16 +3365,16 @@ index b4e881a..8e9ef42 100644
  
 +    /// Once per loop: the server is ready, join it; nothing is drawn by this.
 +    pub(super) fn poll_integrated_opening(&mut self) -> Result<bool> {
-+        let Some(opening) = self.integrated_opening.as_mut() else {
-+            return Ok(false);
++        let result = match self.integrated_opening.as_ref() {
++            Some(opening) => opening.ready.try_recv(),
++            None => return Ok(false),
 +        };
-+        match opening.ready.try_recv() {
++        match result {
 +            Ok(Ok((pipe, world_name))) => {
++                let Some(mut opening) = self.integrated_opening.take() else {
++                    return Ok(false);
++                };
 +                opening.handle.world_name = world_name;
-+                let opening = self
-+                    .integrated_opening
-+                    .take()
-+                    .ok_or("missing integrated opening")?;
 +                self.connect_local(pipe, &opening.player)?;
 +                self.integrated = Some(opening.handle);
 +                Ok(true)
@@ -6690,7 +6690,7 @@ index cb96fea..f99d8a8 100644
      std::os::unix::fs::symlink(target, at)
  }
 diff --git a/crates/horizon-client/src/options_ui.rs b/crates/horizon-client/src/options_ui.rs
-index 0cfc0ba..ce4b64c 100644
+index 0cfc0ba..808d73d 100644
 --- a/crates/horizon-client/src/options_ui.rs
 +++ b/crates/horizon-client/src/options_ui.rs
 @@ -298,7 +298,11 @@ impl Opt {
@@ -6731,7 +6731,7 @@ index 0cfc0ba..ce4b64c 100644
 +                    "Simulation"
 +                },
 +                Text::tr("options.chunks", &[&s.simulation_distance]),
-+            )
++            ),
              Opt::Sensitivity => {
                  if s.sensitivity == 0.0 {
                      generic(c, tr("options.sensitivity.min"))
