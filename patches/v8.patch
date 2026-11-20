@@ -2706,7 +2706,7 @@ index 1903cab..37b2b65 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..0f515b3 100644
+index 0937cdc..289fcd3 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -3312,7 +3312,7 @@ index 0937cdc..0f515b3 100644
 +        // screen and of the original title in `captures/`, so the layout can
 +        // be inspected over FTP.
 +        if cfg!(target_os = "horizon") {
-+            let hint = self.menu.capture_hint();
++            let hint = self.capture_hint();
 +            if let (Some(hint), Some(renderer)) = (hint, self.renderer.as_mut())
 +                && !self.captured.contains(hint)
 +            {
