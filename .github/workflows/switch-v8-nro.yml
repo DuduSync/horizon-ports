@@ -1,0 +1,137 @@
+name: switch-v8-nro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Clone sources
+        run: |
+          set -eux
+          git clone --depth 1 --branch v0.1.1 https://github.com/MakrSas/horizon-switch.git makrsas
+          git clone --depth 1 https://github.com/tarkodev/horizon-switch.git tarkodev
+          mkdir -p makrsas/switch/vendor
+          cp -a tarkodev/switch/vendor/cpal makrsas/switch/vendor/cpal
+
+      - name: Apply v8 patch
+        run: |
+          set -eux
+          cd makrsas
+          git apply ../patches/v8.patch
+
+      - name: Restore NVK
+        uses: actions/cache@v4
+        with:
+          path: makrsas/switch/build/nvk
+          key: nvk-${{ runner.os }}-3eac779b-2026-10-25
+
+      - name: Prepare NVK sources
+        run: |
+          set -eux
+          cd makrsas
+          mkdir -p switch/build/nvk-src
+          if [ ! -d switch/build/nvk-src/bevy-horizon ]; then
+            git clone https://github.com/JohnUzoka/bevy-horizon switch/build/nvk-src/bevy-horizon
+            git -C switch/build/nvk-src/bevy-horizon checkout -q 3eac779b232ee47cd0eb957676c64386ac7b0f1d
+            sed -i '/^RUN dkp-pacman -Syu/,/dkp-pacman -Scc --noconfirm/d' switch/build/nvk-src/bevy-horizon/Containerfile
+          fi
+
+      - name: Build NVK
+        run: |
+          set -eux
+          cd makrsas
+          if [ -f switch/build/nvk/lib/libvulkan_bh.a ]; then
+            echo "NVK restored from cache"
+          else
+            switch/scripts/build-nvk.sh
+          fi
+          ls -lh switch/build/nvk/lib/libvulkan_bh.a
+
+      - name: Prune Docker
+        run: |
+          docker system prune -af --volumes || true
+          df -h
+
+      - name: Prepare toolchain image
+        run: |
+          set -eux
+          sed -i '/^RUN dkp-pacman -Syu/,/switch-tools 1.13.1-1/d' tarkodev/switch/Containerfile
+          sed -i 's/nightly-2026-10-04/nightly-2026-10-25/g' tarkodev/switch/Containerfile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: tarkodev/switch
+          file: tarkodev/switch/Containerfile
+          tags: horizon-build:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Restore cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            makrsas/target
+            cargo-registry
+            cargo-git
+          key: cargo-${{ runner.os }}-${{ hashFiles('makrsas/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Build Horizon v8
+        run: |
+          set -eux
+          mkdir -p cargo-registry cargo-git
+          docker run --rm \
+            -v "$PWD/makrsas:/work" \
+            -v "$PWD/cargo-registry:/root/.cargo/registry" \
+            -v "$PWD/cargo-git:/root/.cargo/git" \
+            -w /work \
+            horizon-build \
+            bash -lc 'RUST_TOOLCHAIN=nightly-2026-10-25 switch/scripts/build.sh'
+
+      - name: Package NRO
+        run: |
+          set -eux
+          mkdir -p out
+          docker run --rm -v "$PWD/makrsas:/work" -v "$PWD/out:/out" -w /work horizon-build bash -lc '
+            nacptool --create "Horizon" "Horizon" "0.1.8" /tmp/horizon.nacp --titleid=0100485952450000
+            elf2nro switch/build/horizon.elf /out/Horizon-v8.nro --icon=switch/icon.jpg --nacp=/tmp/horizon.nacp
+          '
+          ls -lh out
+          sha256sum out/Horizon-v8.nro
+
+      - name: Upload NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: Horizon-v8-nro
+          path: out/Horizon-v8.nro
+
+      - name: Upload ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: Horizon-v8-elf
+          path: makrsas/switch/build/horizon.elf
