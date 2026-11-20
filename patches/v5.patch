@@ -2692,7 +2692,7 @@ index 1903cab..3a453af 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..86bc8e5 100644
+index 0937cdc..964bd46 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -2769,7 +2769,7 @@ index 0937cdc..86bc8e5 100644
          } else {
              horizon_client::spans::time("hud_layers", || self.hud_layers(size))
          };
-@@ -4992,10 +5035,32 @@ impl Game<'_> {
+@@ -4992,10 +5035,36 @@ impl Game<'_> {
          self.frame_graph
              .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
          horizon_client::spans::time("hud_draw_pad_cursor", || self.draw_pad_cursor(&mut batch));
@@ -2779,10 +2779,12 @@ index 0937cdc..86bc8e5 100644
 +    /// Horizon's own pointer for a real mouse, over every menu. It fades out
 +    /// after two idle seconds and never shows while the pointer is grabbed.
 +    fn draw_mouse_cursor(&self, batch: &mut HudBatch) {
++        let launcher = self.title.as_ref().is_some_and(|t| t.is_launcher());
++        let pad_drives = launcher && self.pad.menu.pointer_shown();
 +        if !cfg!(target_os = "horizon")
 +            || self.captured
-+            || !self.mouse_seen
-+            || self.pad.menu.pointer_shown()
++            || (!self.mouse_seen && !pad_drives)
++            || (self.pad.menu.pointer_shown() && !launcher)
 +        {
 +            return;
 +        }
@@ -2790,7 +2792,9 @@ index 0937cdc..86bc8e5 100644
 +            return;
 +        }
 +        let idle = self.mouse_last.elapsed().as_secs_f32();
-+        let opacity = if idle < 2.0 {
++        let opacity = if pad_drives {
++            1.0
++        } else if idle < 2.0 {
 +            1.0
 +        } else {
 +            (1.0 - (idle - 2.0) / 0.5).clamp(0.0, 1.0)
@@ -2803,7 +2807,7 @@ index 0937cdc..86bc8e5 100644
          let (w, h) = (batch.width, batch.height);
          if self.screen == Screen::Win {
              horizon_client::spans::time("hl_draw_win_screen", || self.draw_win_screen(&mut batch));
-@@ -5007,6 +5072,7 @@ impl Game<'_> {
+@@ -5007,6 +5076,7 @@ impl Game<'_> {
          }
          if let Some(title) = &mut self.title {
              title.poll_backup();
@@ -2811,7 +2815,7 @@ index 0937cdc..86bc8e5 100644
              if let Some(sound) = title.update_toast(self.settings.notification_display_time) {
                  self.audio.play(sound, None, 1.0, 1.0);
              }
-@@ -11159,6 +11225,7 @@ impl ApplicationHandler for Game<'_> {
+@@ -11159,6 +11229,7 @@ impl ApplicationHandler for Game<'_> {
          }
          if let WindowEvent::Focused(false) = &event {
              self.physical_keys.clear();
@@ -2819,7 +2823,7 @@ index 0937cdc..86bc8e5 100644
          }
          if let WindowEvent::ModifiersChanged(m) = &event {
              self.modifiers = m.state();
-@@ -11202,6 +11269,21 @@ impl ApplicationHandler for Game<'_> {
+@@ -11202,6 +11273,21 @@ impl ApplicationHandler for Game<'_> {
          ) {
              self.last_input = Instant::now();
          }
@@ -2841,7 +2845,7 @@ index 0937cdc..86bc8e5 100644
          if (self.pending_entry.is_some() || self.world_loader.is_some())
              && matches!(&event, WindowEvent::KeyboardInput { event, .. }
                  if event.state == ElementState::Pressed
-@@ -11284,10 +11366,27 @@ impl ApplicationHandler for Game<'_> {
+@@ -11284,10 +11370,27 @@ impl ApplicationHandler for Game<'_> {
                          }
                      }
                  }
@@ -2872,7 +2876,7 @@ index 0937cdc..86bc8e5 100644
                          if self.screen == Screen::Advancements {
                              self.advancements_drag();
                          }
-@@ -11335,16 +11434,16 @@ impl ApplicationHandler for Game<'_> {
+@@ -11335,16 +11438,16 @@ impl ApplicationHandler for Game<'_> {
                      let d = scaled(raw_y) as f32;
                      if self.dialog_open() {
                          self.dialog_scroll(d);
@@ -2894,7 +2898,7 @@ index 0937cdc..86bc8e5 100644
                      }
                      if self.screen == Screen::Playing
                          && self.sleeping.is_none()
-@@ -11441,7 +11540,7 @@ impl ApplicationHandler for Game<'_> {
+@@ -11441,7 +11544,7 @@ impl ApplicationHandler for Game<'_> {
                          .as_ref()
                          .map(|r| [r.config.width, r.config.height])
                          .unwrap_or([1, 1]);
@@ -2903,7 +2907,7 @@ index 0937cdc..86bc8e5 100644
                      let atlas = &self.gui.atlas;
                      let shift = self.has_shift_down();
                      let (action, sound) = self.title.as_mut().map_or((Action::None, false), |t| {
-@@ -11461,6 +11560,52 @@ impl ApplicationHandler for Game<'_> {
+@@ -11461,6 +11564,52 @@ impl ApplicationHandler for Game<'_> {
                          Action::Language => {
                              self.open_options_at(true, horizon_client::options_ui::Page::Language)
                          }
@@ -2956,7 +2960,7 @@ index 0937cdc..86bc8e5 100644
                          Action::Play { folder } => {
                              self.open_world(&folder, None, None, false, None)?
                          }
-@@ -11996,16 +12141,28 @@ impl ApplicationHandler for Game<'_> {
+@@ -11996,16 +12145,28 @@ impl ApplicationHandler for Game<'_> {
              event_loop.exit();
          }
      }
@@ -2987,7 +2991,7 @@ index 0937cdc..86bc8e5 100644
          }
      }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-@@ -12189,6 +12346,10 @@ impl<'a> Game<'a> {
+@@ -12189,6 +12350,10 @@ impl<'a> Game<'a> {
              right: false,
              cursor: (0.0, 0.0),
              cursor_icon: horizon_client::widgets::Cursor::Arrow,
@@ -2998,7 +3002,7 @@ index 0937cdc..86bc8e5 100644
              captured: false,
              focused: true,
              modifiers: winit::keyboard::ModifiersState::empty(),
-@@ -13071,6 +13232,12 @@ fn build_renderer(
+@@ -13071,6 +13236,12 @@ fn build_renderer(
          previous,
          api,
      ))?;
@@ -3011,7 +3015,7 @@ index 0937cdc..86bc8e5 100644
      renderer.hud.fire_animations = atlas
          .fire_animations
          .iter()
-@@ -13118,6 +13285,10 @@ fn loading_renderer(
+@@ -13118,6 +13289,10 @@ fn loading_renderer(
          api,
      ))?;
      if let Some(atlas) = atlas {
@@ -3022,7 +3026,7 @@ index 0937cdc..86bc8e5 100644
          renderer.hud.fire_animations = atlas
              .fire_animations
              .iter()
-@@ -13127,6 +13298,29 @@ fn loading_renderer(
+@@ -13127,6 +13302,29 @@ fn loading_renderer(
      Ok(renderer)
  }
  
@@ -3052,7 +3056,7 @@ index 0937cdc..86bc8e5 100644
  /// A title-shaped frame: black clear and panorama, only the HUD is drawn.
  fn loading_frame(hud: &HudBatch) -> Frame<'_> {
      Frame {
-@@ -13308,7 +13502,7 @@ fn start_game<'a>(
+@@ -13308,7 +13506,7 @@ fn start_game<'a>(
          }
          None if handoff => {}
          None => {
@@ -3061,7 +3065,7 @@ index 0937cdc..86bc8e5 100644
                  std::env::current_dir()?.join("saves"),
                  &game.options.resources,
              );
-@@ -13373,8 +13567,15 @@ struct Loading {
+@@ -13373,8 +13571,15 @@ struct Loading {
      frames_drawn: u32,
      frames_skipped: u32,
      menu: startup_menu::StartupMenu,
@@ -3077,7 +3081,7 @@ index 0937cdc..86bc8e5 100644
  impl Loading {
      fn resumed(&mut self, event_loop: &ActiveEventLoop) {
          if self.window.is_some() {
-@@ -13496,8 +13697,26 @@ impl Loading {
+@@ -13496,8 +13701,26 @@ impl Loading {
          else {
              return;
          };
@@ -3105,7 +3109,7 @@ index 0937cdc..86bc8e5 100644
          let mut frame = loading_frame(&batch);
          frame.yaw = self.panorama_rotation.update(
              self.started.elapsed().as_secs_f32(),
-@@ -13541,6 +13760,16 @@ impl Loading {
+@@ -13541,6 +13764,16 @@ impl Loading {
          let window = self.window.clone().ok_or("window closed")?;
          // Keep the loader's device and swap in the real textures in one step.
          if let Some(renderer) = &mut self.renderer {
@@ -3122,7 +3126,7 @@ index 0937cdc..86bc8e5 100644
              renderer.release_surface();
          }
          let renderer_at = Instant::now();
-@@ -13624,8 +13853,9 @@ impl ApplicationHandler for App {
+@@ -13624,8 +13857,9 @@ impl ApplicationHandler for App {
          }
      }
      fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
@@ -3134,7 +3138,7 @@ index 0937cdc..86bc8e5 100644
          }
      }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-@@ -13713,6 +13943,10 @@ fn run_loading(
+@@ -13713,6 +13947,10 @@ fn run_loading(
          frames_drawn: 0,
          frames_skipped: 0,
          menu,
@@ -3158,7 +3162,7 @@ index fa9dbf3..d9b47d5 100644
              Mode::Select {
                  worlds: list,
 diff --git a/crates/horizon-client/src/game/pad_menu.rs b/crates/horizon-client/src/game/pad_menu.rs
-index 8712722..073db38 100644
+index 8712722..5dd5b4c 100644
 --- a/crates/horizon-client/src/game/pad_menu.rs
 +++ b/crates/horizon-client/src/game/pad_menu.rs
 @@ -91,6 +91,13 @@ pub(super) struct MenuCursor {
@@ -3184,7 +3188,18 @@ index 8712722..073db38 100644
      }
  
      /// Focus mode is on for the open screen.
-@@ -1049,7 +1056,12 @@ impl Game<'_> {
+@@ -1013,6 +1020,10 @@ impl Game<'_> {
+             self.draw_pad_focus(batch, focus);
+             return;
+         }
++        // The launcher paints its own, larger pointer over this position.
++        if self.title.as_ref().is_some_and(|t| t.is_launcher()) {
++            return;
++        }
+         // An arrow, outlined, pointing up-left at (x, y).
+         let atlas = &self.gui.atlas;
+         let (x, y) = (x.floor(), y.floor());
+@@ -1049,7 +1060,12 @@ impl Game<'_> {
      /// `EditBox`'s highlighted border).
      fn draw_pad_focus(&self, batch: &mut HudBatch, focus: Target) {
          let [x, y, w, h] = focus.rect;
@@ -3653,10 +3668,10 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..ef87198
+index 0000000..eafe72e
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
-@@ -0,0 +1,2550 @@
+@@ -0,0 +1,2577 @@
 +//! The Switch launcher: a separate, dark screen shown before the Minecraft
 +//! title. Pressing Play changes `Title::Mode::Launcher` to the original
 +//! `Title::Mode::Main`; the game's own title is untouched.
@@ -5428,7 +5443,7 @@ index 0000000..ef87198
 +        );
 +        match self.tab {
 +            Tab::Home => self.draw_home(atlas, batch, w, h),
-+            Tab::Mods => self.draw_mods(atlas, batch, w, h),
++            Tab::Mods => self.draw_mods(atlas, batch, cursor, w, h),
 +            Tab::Account => self.draw_account(atlas, batch, w, h),
 +            Tab::Settings => self.draw_settings(atlas, batch, w, h),
 +        }
@@ -5493,8 +5508,21 @@ index 0000000..ef87198
 +        }
 +    }
 +
-+    fn draw_mods(&self, atlas: &HudAtlas, batch: &mut HudBatch, w: f32, h: f32) {
++    fn draw_mods(
++        &self,
++        atlas: &HudAtlas,
++        batch: &mut HudBatch,
++        cursor: (f32, f32),
++        w: f32,
++        h: f32,
++    ) {
 +        let (x, cw) = content(w);
++        let over = |r: [f32; 4]| {
++            cursor.0 >= r[0]
++                && cursor.0 < r[0] + r[2]
++                && cursor.1 >= r[1]
++                && cursor.1 < r[1] + r[3]
++        };
 +        let y = 134.0;
 +        let warning = if cfg!(feature = "mods") {
 +            tr("mods_shader")
@@ -5515,7 +5543,14 @@ index 0000000..ef87198
 +                    let row = mods_row_rect(x, cw, 156.0 + i as f32 * 36.0);
 +                    // The pad focuses the whole row; A clicks it.
 +                    crate::widgets::target_as(row, crate::widgets::Kind::Row);
-+                    panel(batch, atlas, row, SURFACE, BORDER);
++                    let hovered = over(row);
++                    panel(
++                        batch,
++                        atlas,
++                        row,
++                        if hovered { SURFACE_2 } else { SURFACE },
++                        if hovered { ACCENT } else { BORDER },
++                    );
 +                    let version = project.versions.first();
 +                    let title = format!(
 +                        "{}  {}",
@@ -5574,7 +5609,14 @@ index 0000000..ef87198
 +            {
 +                let row = mods_row_rect(x, cw, 156.0 + i as f32 * 40.0);
 +                crate::widgets::target_as(row, crate::widgets::Kind::Row);
-+                panel(batch, atlas, row, SURFACE, BORDER);
++                let hovered = over(row);
++                panel(
++                    batch,
++                    atlas,
++                    row,
++                    if hovered { SURFACE_2 } else { SURFACE },
++                    if hovered { ACCENT } else { BORDER },
++                );
 +                draw_text(
 +                    batch,
 +                    atlas,
