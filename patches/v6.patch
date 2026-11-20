@@ -2692,7 +2692,7 @@ index 1903cab..3a453af 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..51b4806 100644
+index 0937cdc..cabd1dc 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -2815,7 +2815,27 @@ index 0937cdc..51b4806 100644
              if let Some(sound) = title.update_toast(self.settings.notification_display_time) {
                  self.audio.play(sound, None, 1.0, 1.0);
              }
-@@ -11159,6 +11229,7 @@ impl ApplicationHandler for Game<'_> {
+@@ -9431,6 +9501,19 @@ impl Game<'_> {
+         )
+     }
+     fn apply_settings(&mut self) {
++        // A live options change can ask for more than the Switch's shared GPU memory can
++        // back; clamp before the server/streaming read the value.
++        if cfg!(target_os = "horizon") {
++            self.settings.render_distance = self
++                .settings
++                .render_distance
++                .clamp(2, crate::settings::max_render_distance());
++            self.settings.horizon.lod_distance = self
++                .settings
++                .horizon
++                .lod_distance
++                .min(crate::settings::max_lod_distance());
++        }
+         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
+         let abilities = self.chat_abilities();
+         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
+@@ -11159,6 +11242,7 @@ impl ApplicationHandler for Game<'_> {
          }
          if let WindowEvent::Focused(false) = &event {
              self.physical_keys.clear();
@@ -2823,7 +2843,7 @@ index 0937cdc..51b4806 100644
          }
          if let WindowEvent::ModifiersChanged(m) = &event {
              self.modifiers = m.state();
-@@ -11202,6 +11273,21 @@ impl ApplicationHandler for Game<'_> {
+@@ -11202,6 +11286,21 @@ impl ApplicationHandler for Game<'_> {
          ) {
              self.last_input = Instant::now();
          }
@@ -2845,7 +2865,7 @@ index 0937cdc..51b4806 100644
          if (self.pending_entry.is_some() || self.world_loader.is_some())
              && matches!(&event, WindowEvent::KeyboardInput { event, .. }
                  if event.state == ElementState::Pressed
-@@ -11284,10 +11370,27 @@ impl ApplicationHandler for Game<'_> {
+@@ -11284,10 +11383,27 @@ impl ApplicationHandler for Game<'_> {
                          }
                      }
                  }
@@ -2876,7 +2896,7 @@ index 0937cdc..51b4806 100644
                          if self.screen == Screen::Advancements {
                              self.advancements_drag();
                          }
-@@ -11335,16 +11438,16 @@ impl ApplicationHandler for Game<'_> {
+@@ -11335,16 +11451,16 @@ impl ApplicationHandler for Game<'_> {
                      let d = scaled(raw_y) as f32;
                      if self.dialog_open() {
                          self.dialog_scroll(d);
@@ -2898,7 +2918,7 @@ index 0937cdc..51b4806 100644
                      }
                      if self.screen == Screen::Playing
                          && self.sleeping.is_none()
-@@ -11441,7 +11544,7 @@ impl ApplicationHandler for Game<'_> {
+@@ -11441,7 +11557,7 @@ impl ApplicationHandler for Game<'_> {
                          .as_ref()
                          .map(|r| [r.config.width, r.config.height])
                          .unwrap_or([1, 1]);
@@ -2907,7 +2927,7 @@ index 0937cdc..51b4806 100644
                      let atlas = &self.gui.atlas;
                      let shift = self.has_shift_down();
                      let (action, sound) = self.title.as_mut().map_or((Action::None, false), |t| {
-@@ -11461,6 +11564,52 @@ impl ApplicationHandler for Game<'_> {
+@@ -11461,6 +11577,52 @@ impl ApplicationHandler for Game<'_> {
                          Action::Language => {
                              self.open_options_at(true, horizon_client::options_ui::Page::Language)
                          }
@@ -2960,7 +2980,7 @@ index 0937cdc..51b4806 100644
                          Action::Play { folder } => {
                              self.open_world(&folder, None, None, false, None)?
                          }
-@@ -11996,16 +12145,28 @@ impl ApplicationHandler for Game<'_> {
+@@ -11996,16 +12158,28 @@ impl ApplicationHandler for Game<'_> {
              event_loop.exit();
          }
      }
@@ -2991,7 +3011,7 @@ index 0937cdc..51b4806 100644
          }
      }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-@@ -12189,6 +12350,10 @@ impl<'a> Game<'a> {
+@@ -12189,6 +12363,10 @@ impl<'a> Game<'a> {
              right: false,
              cursor: (0.0, 0.0),
              cursor_icon: horizon_client::widgets::Cursor::Arrow,
@@ -3002,7 +3022,7 @@ index 0937cdc..51b4806 100644
              captured: false,
              focused: true,
              modifiers: winit::keyboard::ModifiersState::empty(),
-@@ -13071,6 +13236,12 @@ fn build_renderer(
+@@ -13071,6 +13249,12 @@ fn build_renderer(
          previous,
          api,
      ))?;
@@ -3015,7 +3035,7 @@ index 0937cdc..51b4806 100644
      renderer.hud.fire_animations = atlas
          .fire_animations
          .iter()
-@@ -13118,6 +13289,10 @@ fn loading_renderer(
+@@ -13118,6 +13302,10 @@ fn loading_renderer(
          api,
      ))?;
      if let Some(atlas) = atlas {
@@ -3026,7 +3046,7 @@ index 0937cdc..51b4806 100644
          renderer.hud.fire_animations = atlas
              .fire_animations
              .iter()
-@@ -13127,6 +13302,29 @@ fn loading_renderer(
+@@ -13127,6 +13315,29 @@ fn loading_renderer(
      Ok(renderer)
  }
  
@@ -3056,7 +3076,7 @@ index 0937cdc..51b4806 100644
  /// A title-shaped frame: black clear and panorama, only the HUD is drawn.
  fn loading_frame(hud: &HudBatch) -> Frame<'_> {
      Frame {
-@@ -13308,7 +13506,7 @@ fn start_game<'a>(
+@@ -13308,7 +13519,7 @@ fn start_game<'a>(
          }
          None if handoff => {}
          None => {
@@ -3065,7 +3085,7 @@ index 0937cdc..51b4806 100644
                  std::env::current_dir()?.join("saves"),
                  &game.options.resources,
              );
-@@ -13373,8 +13571,15 @@ struct Loading {
+@@ -13373,8 +13584,15 @@ struct Loading {
      frames_drawn: u32,
      frames_skipped: u32,
      menu: startup_menu::StartupMenu,
@@ -3081,7 +3101,7 @@ index 0937cdc..51b4806 100644
  impl Loading {
      fn resumed(&mut self, event_loop: &ActiveEventLoop) {
          if self.window.is_some() {
-@@ -13496,8 +13701,39 @@ impl Loading {
+@@ -13496,8 +13714,39 @@ impl Loading {
          else {
              return;
          };
@@ -3123,7 +3143,7 @@ index 0937cdc..51b4806 100644
          let mut frame = loading_frame(&batch);
          frame.yaw = self.panorama_rotation.update(
              self.started.elapsed().as_secs_f32(),
-@@ -13541,6 +13777,20 @@ impl Loading {
+@@ -13541,6 +13790,20 @@ impl Loading {
          let window = self.window.clone().ok_or("window closed")?;
          // Keep the loader's device and swap in the real textures in one step.
          if let Some(renderer) = &mut self.renderer {
@@ -3144,7 +3164,7 @@ index 0937cdc..51b4806 100644
              renderer.release_surface();
          }
          let renderer_at = Instant::now();
-@@ -13624,8 +13874,9 @@ impl ApplicationHandler for App {
+@@ -13624,8 +13887,9 @@ impl ApplicationHandler for App {
          }
      }
      fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
@@ -3156,7 +3176,7 @@ index 0937cdc..51b4806 100644
          }
      }
      fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-@@ -13713,6 +13964,10 @@ fn run_loading(
+@@ -13713,6 +13977,10 @@ fn run_loading(
          frames_drawn: 0,
          frames_skipped: 0,
          menu,
@@ -3539,6 +3559,18 @@ index f8a7256..267a673 100644
              fxaa: true,
              battery: true,
              api: GraphicsApi::Dx12,
+diff --git a/crates/horizon-client/src/graphics_ui.rs b/crates/horizon-client/src/graphics_ui.rs
+index ba99f89..423390e 100644
+--- a/crates/horizon-client/src/graphics_ui.rs
++++ b/crates/horizon-client/src/graphics_ui.rs
+@@ -406,6 +406,7 @@ impl H {
+         match self {
+             H::LodDistance => {
+                 g.lod_distance = step(&[0, 64, 128, 256, 512, 1024], g.lod_distance, back)
++                    .min(crate::settings::max_lod_distance())
+             }
+             H::FarDetail => {
+                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
 diff --git a/crates/horizon-client/src/hud.rs b/crates/horizon-client/src/hud.rs
 index 2b6acda..631a6ed 100644
 --- a/crates/horizon-client/src/hud.rs
@@ -6391,6 +6423,35 @@ index 6de9b7c..42197d7 100644
  pub mod raid;
  pub mod random_sequences;
  pub mod random_tick_sections;
+diff --git a/crates/horizon-client/src/options_ui.rs b/crates/horizon-client/src/options_ui.rs
+index 0cfc0ba..8abcc07 100644
+--- a/crates/horizon-client/src/options_ui.rs
++++ b/crates/horizon-client/src/options_ui.rs
+@@ -298,7 +298,11 @@ impl Opt {
+             | Opt::GlintStrength
+             | Opt::PanoramaSpeed => Kind::Slider(s.file.double(self.file_key().unwrap()) as f32),
+             Opt::Fov => unit(s.fov, 30.0, 110.0),
+-            Opt::RenderDistance => unit(s.render_distance as f32, 2.0, 64.0),
++            Opt::RenderDistance => unit(
++                s.render_distance as f32,
++                2.0,
++                crate::settings::max_render_distance() as f32,
++            ),
+             Opt::SimulationDistance => unit(s.simulation_distance as f32, 5.0, 32.0),
+             Opt::Sensitivity => Kind::Slider(s.sensitivity),
+             Opt::WheelSensitivity => unit(s.mouse_wheel_sensitivity, 0.01, 10.0),
+@@ -633,7 +637,10 @@ impl Opt {
+                 crate::options_file::V::Double(f64::from(v)),
+             ),
+             Opt::Fov => s.fov = step(30.0, 110.0),
+-            Opt::RenderDistance => s.render_distance = step(2.0, 64.0) as i32,
++            Opt::RenderDistance => {
++                s.render_distance =
++                    step(2.0, crate::settings::max_render_distance() as f32) as i32
++            }
+             Opt::SimulationDistance => s.simulation_distance = step(5.0, 32.0) as i32,
+             Opt::Sensitivity => s.sensitivity = v,
+             Opt::WheelSensitivity => s.mouse_wheel_sensitivity = 0.01 + v * 9.99,
 diff --git a/crates/horizon-client/src/qr.rs b/crates/horizon-client/src/qr.rs
 new file mode 100644
 index 0000000..6480f81
@@ -6452,6 +6513,51 @@ index 0000000..6480f81
 +        assert!(!qr.dark(qr.size(), 0));
 +    }
 +}
+diff --git a/crates/horizon-client/src/settings.rs b/crates/horizon-client/src/settings.rs
+index de33de1..7690f3b 100644
+--- a/crates/horizon-client/src/settings.rs
++++ b/crates/horizon-client/src/settings.rs
+@@ -11,6 +11,16 @@ pub const SOUND_SOURCES: [&str; 11] = [
+     "voice", "ui",
+ ];
+ 
++/// The near render ring this platform can hold. The Switch's shared GPU
++/// memory cannot back a 64-chunk ring; the LOD covers the far view instead.
++pub fn max_render_distance() -> i32 {
++    if cfg!(target_os = "horizon") { 16 } else { 64 }
++}
++/// The far LOD distance this platform can draw.
++pub fn max_lod_distance() -> u32 {
++    if cfg!(target_os = "horizon") { 128 } else { 1024 }
++}
++
+ /// Per-source volumes for the mixer (soundCategory_* except master).
+ static SOURCE_VOLUMES: std::sync::RwLock<[f32; 11]> = std::sync::RwLock::new([1.0; 11]);
+ pub fn set_source_volumes(volumes: [f32; 11]) {
+@@ -306,7 +316,7 @@ impl Settings {
+             .parent()
+             .map(crate::mod_list::ModList::load)
+             .unwrap_or_default();
+-        let settings = match fs::read(path) {
++        let mut settings = match fs::read(path) {
+             Ok(bytes) => Self {
+                 horizon,
+                 controller,
+@@ -322,6 +332,14 @@ impl Settings {
+                 ..Self::default()
+             },
+         };
++        // The Switch's shared GPU memory cannot back a 64-chunk ring: the section arena runs
++        // out and NVK aborts. Keep the near ring small and let the LOD cover the far view.
++        if cfg!(target_os = "horizon") {
++            settings.render_distance = settings
++                .render_distance
++                .clamp(2, max_render_distance());
++            settings.horizon.lod_distance = settings.horizon.lod_distance.min(max_lod_distance());
++        }
+         settings.describe_for_crashes();
+         settings
+     }
 diff --git a/crates/horizon-client/src/title.rs b/crates/horizon-client/src/title.rs
 index a696781..49b09d1 100644
 --- a/crates/horizon-client/src/title.rs
