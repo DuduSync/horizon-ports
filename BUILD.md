@@ -1,9 +1,5 @@
 # Building the Switch NRO
 
-## Switch distribution
-
-The console gets exactly **one** file: `/switch/Horizon.nro`. Each build overwrites it, and it is launched from the hbmenu. Versioned NROs and NSPs are no longer packaged or uploaded; the NSP instructions below are kept for legacy builds only. The local build watcher downloads the NRO, uploads it to the stable path and removes the old `Horizon-*.nro`/`Horizon-*.nsp` files.
-
 The port is built from the upstream `MakrSas/horizon-switch` v0.1.1 plus three patches in `patches/`:
 
 1. `launcher-mvp.patch` — integrated dashboard, worlds, account placeholder, settings, offline name, pt-BR.
@@ -21,9 +17,9 @@ The audio backend comes from `tarkodev/horizon-switch`'s patched `cpal` (libnx `
 
 The CI uses the prebuilt `devkitpro/devkita64` image (with all portlibs) and skips `dkp-pacman -Syu`, because `pkg.devkitpro.org` returns 403 to GitHub runners. The game toolchain is nightly `2026-10-25`, the one the v0.1.1 `std.patch` expects.
 
-## Local NSP packaging (legacy)
+## Local NSP packaging
 
-The current Switch flow is NRO-only. This section is kept for older builds that still use an installed NSP. An NSP needs the console's `prod.keys` (never commit it). Use the ELF artifact with `hacbrewpack`:
+An NSP needs the console's `prod.keys` (never commit it). Use the ELF artifact with `hacbrewpack`:
 
 ```sh
 # inside a Linux environment with switch-tools and hacbrewpack
@@ -82,6 +78,15 @@ Build run `44813489808` (cached: 30 minutes total):
 - `Horizon-v6.nsp` — 29,552,344 bytes, SHA-256 `35cf704a4960f2df7798d7aefdb321cb6a094b547d64d36f3b375189adfdec80`, uploaded to `/switch/Horizon-v6.nsp`.
 
 v6 adds the branded loading screen, the launcher interface-size setting (100–175%, 150% default), controller/analog navigation with focus outlines on launcher buttons and mod rows, mod-install logging, and the Switch caps of 16 chunks render distance / 128 chunks LOD that prevent the NVK section-arena OOM seen at 64 chunks. The workflow caches NVK, Docker layers and the Cargo target; the next builds should stay near half an hour.
+
+## v7 artifacts (current NRO)
+
+Build run `44828657611` (cached):
+
+- `/switch/Horizon.nro` — 54,498,124 bytes, SHA-256 `60e44737c6170e66b4878c5267b94c25e7c704932225857311759720945eacec`.
+- `horizon.elf` — 64,697,576 bytes, SHA-256 `d1e1d846683608a2851974ebe0c3944595e7da4159c3d049f3cafc3ebc4476eb`.
+
+v7 adds the branded loading screen while the integrated server opens a world (no more blocked render thread), the `creative_tab`/unknown-content tolerance for `.hmod` files, a copy-based content overlay for the Switch SD (no symlinks), LOD steps 0/32/64/96/128 on the Switch, controller input resetting the AFK timer, short distance labels, and the built-in public Microsoft client ID (`cc5f2f0a…`). The SD `msa-client-id.txt` is no longer needed. Launcher-first boot, the decoded-resource cache, the shared pad in the launcher/title and the fixed performance preset are the next version (v8).
 
 ## Status
 
