@@ -67,7 +67,17 @@ Build run `44801452331`:
 - `horizon.elf` — 64,647,584 bytes, SHA-256 `6f5e7dbbc127fedbc1a96b70544a4a5c43af199ba48e8d6dbbaf5d14f6343493`.
 - `Horizon-v4.nsp` — 29,546,712 bytes, SHA-256 `4b3e995d120f110f4d22fead80c9a668a58b9c90f6ca030581118127f99fc146`, uploaded to `/switch/Horizon-v4.nsp`.
 
-v4 adds the live `appletGetDefaultDisplayResolution` query for 1080p docked, the 24x36 mouse cursor, the `cursorSpeed` setting, raw-delta pointer movement and the HID report-rate log. The v6 branch adds the branded loading screen, the launcher interface-size setting and controller navigation; see `docs/input-hid-mouse.md`.
+v4 adds the live `appletGetDefaultDisplayResolution` query for 1080p docked, the 24x36 mouse cursor, the `cursorSpeed` setting, raw-delta pointer movement and the HID report-rate log.
+
+## v6 artifacts
+
+Build run `44813489808` (cached: 30 minutes total):
+
+- `Horizon-v6.nro` — 54,489,932 bytes, SHA-256 `0007c751445c254bd07a55aa45a795d6f2b8308ad927d3bfbd86aa9a091bc4ef`.
+- `horizon.elf` — 64,684,496 bytes, SHA-256 `fa53bb019da9d5eb4f6e6d605d9a878708be49400e82ed7dd5ce828a63f88def`.
+- `Horizon-v6.nsp` — 29,552,344 bytes, SHA-256 `35cf704a4960f2df7798d7aefdb321cb6a094b547d64d36f3b375189adfdec80`, uploaded to `/switch/Horizon-v6.nsp`.
+
+v6 adds the branded loading screen, the launcher interface-size setting (100–175%, 150% default), controller/analog navigation with focus outlines on launcher buttons and mod rows, mod-install logging, and the Switch caps of 16 chunks render distance / 128 chunks LOD that prevent the NVK section-arena OOM seen at 64 chunks. The workflow caches NVK, Docker layers and the Cargo target; the next builds should stay near half an hour.
 
 ## Status
 
