@@ -57,7 +57,17 @@ Build run `44794429415`:
 - `horizon.elf` — 64,640,312 bytes, SHA-256 `e8cdf1f373503fc0798d82dc01f6bb63db7ff5f320d589a0ba08a3f5c32991bb`.
 - `Horizon-v3.nsp` — 29,535,960 bytes, SHA-256 `e62700b8c0b776ab6b31de4211ffa3d3fb44dd1068bba0ea3504b9bd40188408`, packaged locally with the console's `prod.keys` and uploaded to `/switch/Horizon-v3.nsp`. The NRO is also in `/switch/Horizon-v3.nro`.
 
-v3 fixes the launcher's coordinate space (1040x700 dp instead of the 426x240 GUI pixels), rasterizes the Geist faces at the screen density, and re-rasterizes run-time glyphs after the atlas texture is rebuilt. The v4 branch adds the live 1080p query, the mouse cursor and cursor-speed setting; see `docs/input-hid-mouse.md`.
+v3 fixes the launcher's coordinate space (1040x700 dp instead of the 426x240 GUI pixels), rasterizes the Geist faces at the screen density, and re-rasterizes run-time glyphs after the atlas texture is rebuilt.
+
+## v4 artifacts
+
+Build run `44801452331`:
+
+- `Horizon-v4.nro` — 54,481,740 bytes, SHA-256 `5eb88a894f71e267bad4605758b7b059db3ae59e270cf8181276ca852f69c32d`.
+- `horizon.elf` — 64,647,584 bytes, SHA-256 `6f5e7dbbc127fedbc1a96b70544a4a5c43af199ba48e8d6dbbaf5d14f6343493`.
+- `Horizon-v4.nsp` — 29,546,712 bytes, SHA-256 `4b3e995d120f110f4d22fead80c9a668a58b9c90f6ca030581118127f99fc146`, uploaded to `/switch/Horizon-v4.nsp`.
+
+v4 adds the live `appletGetDefaultDisplayResolution` query for 1080p docked, the 24x36 mouse cursor, the `cursorSpeed` setting, raw-delta pointer movement and the HID report-rate log. The v6 branch adds the branded loading screen, the launcher interface-size setting and controller navigation; see `docs/input-hid-mouse.md`.
 
 ## Status
 
