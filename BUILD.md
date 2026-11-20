@@ -79,6 +79,15 @@ Build run `44813489808` (cached: 30 minutes total):
 
 v6 adds the branded loading screen, the launcher interface-size setting (100–175%, 150% default), controller/analog navigation with focus outlines on launcher buttons and mod rows, mod-install logging, and the Switch caps of 16 chunks render distance / 128 chunks LOD that prevent the NVK section-arena OOM seen at 64 chunks. The workflow caches NVK, Docker layers and the Cargo target; the next builds should stay near half an hour.
 
+## v7 artifacts (current NRO)
+
+Build run `44828657611` (cached):
+
+- `/switch/Horizon.nro` — 54,498,124 bytes, SHA-256 `60e44737c6170e66b4878c5267b94c25e7c704932225857311759720945eacec`.
+- `horizon.elf` — 64,697,576 bytes, SHA-256 `d1e1d846683608a2851974ebe0c3944595e7da4159c3d049f3cafc3ebc4476eb`.
+
+v7 adds the branded loading screen while the integrated server opens a world (no more blocked render thread), the `creative_tab`/unknown-content tolerance for `.hmod` files, a copy-based content overlay for the Switch SD (no symlinks), LOD steps 0/32/64/96/128 on the Switch, controller input resetting the AFK timer, short distance labels, and the built-in public Microsoft client ID (`cc5f2f0a…`). The SD `msa-client-id.txt` is no longer needed. Launcher-first boot, the decoded-resource cache, the shared pad in the launcher/title and the fixed performance preset are the next version (v8).
+
 ## Status
 
 - Audio and full builds pass in CI.
