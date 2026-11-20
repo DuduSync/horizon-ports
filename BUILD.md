@@ -2,7 +2,7 @@
 
 ## Switch distribution
 
-The console gets exactly **one** file: `/switch/Horizon.nro`. Each build overwrites it, and it is launched from the hbmenu. Versioned NROs and NSPs are no longer packaged or uploaded; the NSP instructions below are kept for legacy builds only. The build watcher is `watch_nro.py` (`RUN_ID` + `NRO_PREFIX`), which uploads the NRO to the stable path and removes old `Horizon-*.nro`/`Horizon-*.nsp` files.
+The console gets exactly **one** file: `/switch/Horizon.nro`. Each build overwrites it, and it is launched from the hbmenu. Versioned NROs and NSPs are no longer packaged or uploaded; the NSP instructions below are kept for legacy builds only. The local build watcher downloads the NRO, uploads it to the stable path and removes the old `Horizon-*.nro`/`Horizon-*.nsp` files.
 
 The port is built from the upstream `MakrSas/horizon-switch` v0.1.1 plus three patches in `patches/`:
 
