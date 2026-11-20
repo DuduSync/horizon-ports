@@ -40,6 +40,15 @@ Build run `44518820144` (audio + launcher + auth + account UI):
 - `horizon.elf` — SHA-256 `bc9010f055f209fb621f8a8fe2c35eb8093b5d91f014f76666405a36cf9cfaf0`.
 - `Horizon-full.nsp` — 28,710,104 bytes, SHA-256 `c7665ed789c13d8ab93dc62985c7467d31bad0df6f3e932d7223078147a18fc7`, packaged locally from the ELF and the console's `prod.keys` and uploaded to `/switch/Horizon-full.nsp`. The key was deleted after packaging and is not in this repository.
 
+## v2 artifacts
+
+Build run `44657286518`:
+
+- `Horizon-v2.nro` — 54,469,452 bytes, SHA-256 `22a610f74473cd60962c72d8646f3436cdd032d27029d20a2a5576bb3887891f`.
+- `Horizon-v2.nsp` — 29,534,424 bytes, SHA-256 `2752dc3be3b07b96836a6938079245791e560328fd009fbdf9a252a92001364e`.
+
+v2 includes the separate launcher (dark, Geist, sidebar), the original Minecraft title untouched, QR device-code login, the official mod browser, USB/Bluetooth keyboard and mouse, and 1920x1080 docked / 1280x720 handheld. The NRO/NSP were uploaded to `/switch/`.
+
 ## Status
 
 - Audio and full builds pass in CI.
