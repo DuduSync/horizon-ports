@@ -47,7 +47,17 @@ Build run `44657286518`:
 - `Horizon-v2.nro` — 54,469,452 bytes, SHA-256 `22a610f74473cd60962c72d8646f3436cdd032d27029d20a2a5576bb3887891f`.
 - `Horizon-v2.nsp` — 29,534,424 bytes, SHA-256 `2752dc3be3b07b96836a6938079245791e560328fd009fbdf9a252a92001364e`.
 
-v2 includes the separate launcher (dark, Geist, sidebar), the original Minecraft title untouched, QR device-code login, the official mod browser, USB/Bluetooth keyboard and mouse, and 1920x1080 docked / 1280x720 handheld. The NRO/NSP were uploaded to `/switch/`.
+v2 includes the separate launcher (dark, Geist, sidebar), the original Minecraft title untouched, QR device-code login, the official mod browser, USB keyboard/mouse (Bluetooth needs a USB dongle; the Switch 1 does not pair generic Bluetooth HID), and 1920x1080 docked / 1280x720 handheld. The NRO/NSP were uploaded to `/switch/`.
+
+## v3 artifacts
+
+Build run `44794429415`:
+
+- `Horizon-v3.nro` — 54,473,548 bytes, SHA-256 `0977ae6dedbc1ef517786775ae0c75866b2b044ec9bcc260e896fb2016cce1aa`.
+- `horizon.elf` — 64,640,312 bytes, SHA-256 `e8cdf1f373503fc0798d82dc01f6bb63db7ff5f320d589a0ba08a3f5c32991bb`.
+- NSP pending: the console was offline when the watcher ran, so `prod.keys` could not be fetched. The NRO is in `/sdcard/Horizon-Ports/builds/v3/`.
+
+v3 fixes the launcher's coordinate space (1040x700 dp instead of the 426x240 GUI pixels), rasterizes the Geist faces at the screen density, and re-rasterizes run-time glyphs after the atlas texture is rebuilt. The v4 branch adds the live 1080p query, the mouse cursor and cursor-speed setting; see `docs/input-hid-mouse.md`.
 
 ## Status
 
