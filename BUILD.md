@@ -79,7 +79,16 @@ Build run `44813489808` (cached: 30 minutes total):
 
 v6 adds the branded loading screen, the launcher interface-size setting (100–175%, 150% default), controller/analog navigation with focus outlines on launcher buttons and mod rows, mod-install logging, and the Switch caps of 16 chunks render distance / 128 chunks LOD that prevent the NVK section-arena OOM seen at 64 chunks. The workflow caches NVK, Docker layers and the Cargo target; the next builds should stay near half an hour.
 
-## v9 artifacts (current NRO)
+## v10 artifacts (current NRO)
+
+Build run `44855100875` (one combined v10; NACP title **Horizon**, author **Horizon**, version **0.2.1**):
+
+- `/switch/Horizon.nro` — 54,657,868 bytes, SHA-256 `a84e16ae2b181363e225679ef84dbd27db6c51922cdb98ce6182e63af4c5bd7b`.
+- `horizon.elf` — 64,897,448 bytes, SHA-256 `f7afb213ef89768385e2747375cc95d063eeae52579d4ece966ed4547a7fbe27`.
+
+v10 redraws the launcher at the preview's 1280x720 layout (100% scale, 252 px sidebar, 212 px hero, cards, recent-world card, controller hints), fixes the palette byte order, rebuilds the account cards and adds the real `HudBatch` → PNG preview example. The TNT/LAN tick spikes remain the next performance work.
+
+## v9 artifacts (previous NRO)
 
 Build run `44848313848` (one combined v9; NACP title **Horizon**, author **Horizon**, version **0.2.0**):
 
