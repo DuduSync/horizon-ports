@@ -4555,7 +4555,7 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..bd30efa
+index 0000000..c28cebf
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
 @@ -0,0 +1,2971 @@
@@ -6390,7 +6390,7 @@ index 0000000..bd30efa
 +        F_SMALL,
 +        &format!(
 +            "NINTENDO SWITCH · {}",
-+            horizon_client::version::VERSION
++            crate::version::VERSION
 +        ),
 +        x + 2.0,
 +        h * 0.14 + 46.0,
@@ -6443,8 +6443,8 @@ index 0000000..bd30efa
 +        draw_text(batch, atlas, F_SMALL, tr("brand_sub"), 18.0, 54.0, MUTED);
 +        let version = format!(
 +            "{} · {}",
-+            horizon_client::version::VERSION,
-+            horizon_client::version::GAME
++            crate::version::VERSION,
++            crate::version::GAME
 +        );
 +        draw_text(batch, atlas, F_SMALL, &version, 18.0, h - 56.0, MUTED);
 +        let _ = pill(
@@ -6547,7 +6547,7 @@ index 0000000..bd30efa
 +            batch,
 +            atlas,
 +            F_TITLE,
-+            horizon_client::version::EDITION,
++            crate::version::EDITION,
 +            x + 18.0,
 +            172.0,
 +            MUTED,
