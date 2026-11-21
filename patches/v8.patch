@@ -2706,7 +2706,7 @@ index 1903cab..37b2b65 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..289fcd3 100644
+index 0937cdc..a283b6f 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -2894,6 +2894,15 @@ index 0937cdc..289fcd3 100644
          if self.pending_entry.is_some() {
              if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
                  let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+@@ -11109,7 +11214,7 @@ impl ApplicationHandler for Game<'_> {
+         let size = self.options.window_size.map(f64::from);
+         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
+         let attributes = Window::default_attributes()
+-            .with_title("Horizon")
++            .with_title(horizon_client::version::NAME)
+             .with_window_icon(horizon_client::window::icon());
+         // Wayland names the window by its app id, which the horizon.desktop entry matches.
+         #[cfg(target_os = "linux")]
 @@ -11159,6 +11264,7 @@ impl ApplicationHandler for Game<'_> {
          }
          if let WindowEvent::Focused(false) = &event {
@@ -3246,6 +3255,15 @@ index 0937cdc..289fcd3 100644
  impl Loading {
      fn resumed(&mut self, event_loop: &ActiveEventLoop) {
          if self.window.is_some() {
+@@ -13389,7 +13654,7 @@ impl Loading {
+             .map(f64::from);
+         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
+         let attributes = Window::default_attributes()
+-            .with_title("Horizon")
++            .with_title(horizon_client::version::NAME)
+             .with_window_icon(horizon_client::window::icon());
+         // Wayland names the window by its app id, which the horizon.desktop entry matches.
+         #[cfg(target_os = "linux")]
 @@ -13473,12 +13738,17 @@ impl Loading {
              building.elapsed().as_millis()
          );
@@ -3687,7 +3705,7 @@ index 8712722..5dd5b4c 100644
              let white = rgba(255, 255, 255, 255);
              batch.fill(atlas, x, y, w, 1.0, white);
 diff --git a/crates/horizon-client/src/game/startup_menu.rs b/crates/horizon-client/src/game/startup_menu.rs
-index cf301ac..3f42e61 100644
+index cf301ac..18f75dc 100644
 --- a/crates/horizon-client/src/game/startup_menu.rs
 +++ b/crates/horizon-client/src/game/startup_menu.rs
 @@ -5,7 +5,10 @@ use horizon_client::{
@@ -4537,10 +4555,10 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..9cea244
+index 0000000..748003b
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
-@@ -0,0 +1,2743 @@
+@@ -0,0 +1,2982 @@
 +//! The Switch launcher: a separate, dark screen shown before the Minecraft
 +//! title. Pressing Play changes `Title::Mode::Launcher` to the original
 +//! `Title::Mode::Main`; the game's own title is untouched.
@@ -4578,18 +4596,19 @@ index 0000000..9cea244
 +const F_LABEL: &str = "horizon:ui15";
 +const F_TITLE: &str = "horizon:ui28";
 +const F_BIG: &str = "horizon:ui40";
++const F_PLAY: &str = "horizon:ui20";
 +const F_CODE: &str = "horizon:ui34";
 +const F_MONO: &str = "horizon:ui_mono12";
 +
-+// The launcher's palette: cool dark neutrals, one sober amber accent.
-+const BG: u32 = 0xff0a0d12;
-+const SIDEBAR: u32 = 0xff0e1218;
-+const SURFACE: u32 = 0xff151a22;
-+const SURFACE_2: u32 = 0xff1b222c;
-+const BORDER: u32 = 0xff2a323d;
-+const TEXT: u32 = 0xffe8eaed;
-+const MUTED: u32 = 0xff98a1ad;
-+const ACCENT: u32 = 0xffe0a43a;
++// The launcher's palette: deep blue-black neutrals, one warm amber accent.
++const BG: u32 = 0xff070a10;
++const SIDEBAR: u32 = 0xff0b1018;
++const SURFACE: u32 = 0xff121822;
++const SURFACE_2: u32 = 0xff1a2330;
++const BORDER: u32 = 0xff2a3646;
++const TEXT: u32 = 0xfff2f5f9;
++const MUTED: u32 = 0xff9aa4b2;
++const ACCENT: u32 = 0xfff0be63;
 +const ACCENT_INK: u32 = 0xff16120a;
 +const OK: u32 = 0xff7fd3a0;
 +const BAD: u32 = 0xfff0a0a0;
@@ -5376,6 +5395,15 @@ index 0000000..9cea244
 +    ("home_account_off", "Offline"),
 +    ("home_mods", "Mods instalados"),
 +    ("home_mods_none", "Nenhum"),
++    ("home_ready", "PRONTO PARA JOGAR"),
++    ("home_ready_short", "Pronto"),
++    ("home_edition", "Java Edition 26.3"),
++    ("home_account_on", "Conta conectada"),
++    ("home_account_off_hint", "Entrar com Microsoft"),
++    ("home_mods_hint", "Instalar ou ativar conteúdo"),
++    ("home_render", "Render"),
++    ("home_lod", "LOD"),
++    ("home_target", "Alvo"),
 +    (
 +        "home_hint",
 +        "Jogar entra no título original do Minecraft; nada do jogo foi alterado.",
@@ -5560,6 +5588,15 @@ index 0000000..9cea244
 +    ("home_account_off", "Offline"),
 +    ("home_mods", "Installed mods"),
 +    ("home_mods_none", "None"),
++    ("home_ready", "READY TO PLAY"),
++    ("home_ready_short", "Ready"),
++    ("home_edition", "Java Edition 26.3"),
++    ("home_account_on", "Account connected"),
++    ("home_account_off_hint", "Sign in with Microsoft"),
++    ("home_mods_hint", "Install or enable content"),
++    ("home_render", "Render"),
++    ("home_lod", "LOD"),
++    ("home_target", "Target"),
 +    (
 +        "home_hint",
 +        "Play enters the original Minecraft title; nothing in the game was changed.",
@@ -5891,7 +5928,9 @@ index 0000000..9cea244
 +        match self.tab {
 +            Tab::Home => {
 +                let (x, cw) = content(w);
-+                let r = [x, 96.0, cw.min(330.0), 64.0];
++                // The hero's Play key, not a full-width bar: it reads as an
++                // action inside the card instead of a second title.
++                let r = [x + cw - 188.0, 118.0, 172.0, 54.0];
 +                buttons.push(button(r, tr("home_play"), true, 10, true));
 +            }
 +            Tab::Mods => {
@@ -6325,6 +6364,7 @@ index 0000000..9cea244
 +    font.add_ttf_font(F_LABEL, horizon_theme::fonts::GEIST_MEDIUM, 15.0, density);
 +    font.add_ttf_font(F_TITLE, horizon_theme::fonts::GEIST_SEMIBOLD, 28.0, density);
 +    font.add_ttf_font(F_BIG, horizon_theme::fonts::GEIST_SEMIBOLD, 40.0, density);
++    font.add_ttf_font(F_PLAY, horizon_theme::fonts::GEIST_SEMIBOLD, 20.0, density);
 +    font.add_ttf_font(F_CODE, horizon_theme::fonts::GEIST_SEMIBOLD, 34.0, density);
 +    font.add_ttf_font(F_MONO, horizon_theme::fonts::GEIST_MONO, 12.0, density);
 +}
@@ -6348,7 +6388,10 @@ index 0000000..9cea244
 +        batch,
 +        atlas,
 +        F_SMALL,
-+        "NINTENDO SWITCH",
++        &format!(
++            "NINTENDO SWITCH · {}",
++            crate::version::VERSION
++        ),
 +        x + 2.0,
 +        h * 0.14 + 46.0,
 +        MUTED,
@@ -6384,15 +6427,35 @@ index 0000000..9cea244
 +        atlas: &HudAtlas,
 +        batch: &mut HudBatch,
 +        cursor: (f32, f32),
-+        _started: Instant,
++        started: Instant,
 +    ) {
 +        self.ensure_fonts(&atlas.font, batch.scale);
 +        let (w, h) = (batch.width.ceil(), batch.height.ceil());
-+        batch.fill(atlas, 0.0, 0.0, w, h, BG);
++        batch.fill_gradient(
++            atlas,
++            (0.0, 0.0, w, h),
++            rgba(7, 10, 16, 255),
++            rgba(10, 15, 23, 255),
++        );
 +        batch.fill(atlas, 0.0, 0.0, sidebar_w(w), h, SIDEBAR);
 +        batch.fill(atlas, sidebar_w(w) - 1.0, 0.0, 1.0, h, BORDER);
 +        draw_text(batch, atlas, F_LABEL, tr("brand"), 18.0, 34.0, ACCENT);
 +        draw_text(batch, atlas, F_SMALL, tr("brand_sub"), 18.0, 54.0, MUTED);
++        let version = format!(
++            "{} · {}",
++            crate::version::VERSION,
++            crate::version::GAME
++        );
++        draw_text(batch, atlas, F_SMALL, &version, 18.0, h - 56.0, MUTED);
++        let _ = pill(
++            batch,
++            atlas,
++            w - 94.0,
++            34.0,
++            tr("home_ready_short"),
++            OK,
++            rgba(127, 211, 160, 28),
++        );
 +        let active = match self.tab {
 +            Tab::Home => 0,
 +            Tab::Mods => 1,
@@ -6400,8 +6463,8 @@ index 0000000..9cea244
 +            Tab::Settings => 3,
 +        };
 +        let [ax, ay, aw, ah] = nav_rect(active, w);
-+        batch.fill(atlas, ax, ay, aw, ah, SURFACE_2);
-+        batch.fill(atlas, ax, ay, 3.0, ah, ACCENT);
++        fill_rounded(batch, atlas, [ax, ay, aw, ah], 8.0, SURFACE_2);
++        batch.fill(atlas, ax, ay + 8.0, 3.0, ah - 16.0, ACCENT);
 +        let title = match self.tab {
 +            Tab::Home => tr("home_title"),
 +            Tab::Mods => tr("mods_title"),
@@ -6433,7 +6496,7 @@ index 0000000..9cea244
 +            if self.tab == Tab::Mods { WARN } else { MUTED },
 +        );
 +        match self.tab {
-+            Tab::Home => self.draw_home(atlas, batch, w, h),
++            Tab::Home => self.draw_home(atlas, batch, w, h, started),
 +            Tab::Mods => self.draw_mods(atlas, batch, cursor, w, h),
 +            Tab::Account => self.draw_account(atlas, batch, w, h),
 +            Tab::Settings => self.draw_settings(atlas, batch, w, h),
@@ -6450,49 +6513,170 @@ index 0000000..9cea244
 +        }
 +    }
 +
-+    fn draw_home(&self, atlas: &HudAtlas, batch: &mut HudBatch, _w: f32, h: f32) {
-+        let (x, cw) = content(_w);
-+        draw_text(batch, atlas, F_SMALL, tr("home_play_sub"), x, 178.0, MUTED);
-+        let card_w = ((cw - 12.0) / 2.0).max(140.0);
-+        let y = 196.0;
-+        panel(batch, atlas, [x, y, card_w, 52.0], SURFACE, BORDER);
++    fn draw_home(
++        &self,
++        atlas: &HudAtlas,
++        batch: &mut HudBatch,
++        w: f32,
++        h: f32,
++        started: Instant,
++    ) {
++        let (x, cw) = content(w);
++        // A hero card, then the two facts that matter before Play.
++        panel(batch, atlas, [x, 96.0, cw, 148.0], SURFACE, BORDER);
++        let pulse = 0.62 + 0.38 * (started.elapsed().as_secs_f32() * 2.2).sin().abs();
++        batch.fill(
++            atlas,
++            x + 1.0,
++            106.0,
++            3.0,
++            128.0,
++            rgba(240, 190, 99, (pulse * 255.0) as u8),
++        );
 +        draw_text(
 +            batch,
 +            atlas,
 +            F_SMALL,
-+            tr("home_account"),
-+            x + 12.0,
-+            y + 8.0,
-+            MUTED,
++            tr("home_ready"),
++            x + 18.0,
++            112.0,
++            ACCENT,
 +        );
-+        let account = crate::auth::current().map_or_else(
-+            || tr("home_account_off").to_owned(),
-+            |session| session.name.clone(),
-+        );
-+        let account = truncate(atlas, F_LABEL, &account, card_w - 24.0);
-+        draw_text(batch, atlas, F_LABEL, &account, x + 12.0, y + 26.0, TEXT);
-+        let x2 = x + card_w + 12.0;
-+        panel(batch, atlas, [x2, y, card_w, 52.0], SURFACE, BORDER);
++        draw_text(batch, atlas, F_BIG, "Minecraft", x + 17.0, 128.0, TEXT);
 +        draw_text(
 +            batch,
 +            atlas,
-+            F_SMALL,
-+            tr("home_mods"),
-+            x2 + 12.0,
-+            y + 8.0,
++            F_TITLE,
++            crate::version::EDITION,
++            x + 18.0,
++            172.0,
 +            MUTED,
 +        );
++        let mut cx = x + 18.0;
 +        let mods = self
 +            .installed
 +            .iter()
 +            .filter(|i| i.kind == InstalledKind::Mod)
 +            .count();
++        let mods_label = if mods == 0 {
++            tr("home_mods_none").to_owned()
++        } else {
++            format!("{mods} mod{}", if mods == 1 { "" } else { "s" })
++        };
++        cx += pill(
++            batch,
++            atlas,
++            cx,
++            212.0,
++            &mods_label,
++            if mods == 0 { MUTED } else { OK },
++            rgba(127, 211, 160, 34),
++        ) + 8.0;
++        let session = crate::auth::current();
++        let signed_in = session.is_some();
++        let account = session.map_or_else(
++            || tr("home_account_off").to_owned(),
++            |session| session.name.clone(),
++        );
++        let account_short = truncate(atlas, F_SMALL, &account, 140.0);
++        let (account_ink, account_fill) = if signed_in {
++            (OK, rgba(127, 211, 160, 34))
++        } else {
++            (WARN, rgba(230, 199, 106, 30))
++        };
++        cx += pill(
++            batch,
++            atlas,
++            cx,
++            212.0,
++            &account_short,
++            account_ink,
++            account_fill,
++        ) + 8.0;
++        let lod = format!("LOD {}", self.settings.horizon.lod_distance);
++        let _ = pill(batch, atlas, cx, 212.0, &lod, MUTED, rgba(26, 35, 48, 210));
++        draw_text(
++            batch,
++            atlas,
++            F_SMALL,
++            tr("home_play_sub"),
++            x + cw - 188.0,
++            180.0,
++            MUTED,
++        );
++
++        let y = 262.0;
++        let card_w = ((cw - 12.0) / 2.0).max(140.0);
++        panel(batch, atlas, [x, y, card_w, 78.0], SURFACE, BORDER);
++        draw_text(
++            batch,
++            atlas,
++            F_SMALL,
++            tr("home_account"),
++            x + 14.0,
++            y + 12.0,
++            MUTED,
++        );
++        let account = truncate(atlas, F_LABEL, &account, card_w - 28.0);
++        draw_text(batch, atlas, F_LABEL, &account, x + 14.0, y + 32.0, TEXT);
++        let account_hint = if signed_in {
++            tr("home_account_on")
++        } else {
++            tr("home_account_off_hint")
++        };
++        draw_text(
++            batch,
++            atlas,
++            F_SMALL,
++            account_hint,
++            x + 14.0,
++            y + 56.0,
++            if signed_in { OK } else { WARN },
++        );
++        let x2 = x + card_w + 12.0;
++        panel(batch, atlas, [x2, y, card_w, 78.0], SURFACE, BORDER);
++        draw_text(
++            batch,
++            atlas,
++            F_SMALL,
++            tr("home_mods"),
++            x2 + 14.0,
++            y + 12.0,
++            MUTED,
++        );
 +        let mods = if mods == 0 {
 +            tr("home_mods_none").to_owned()
 +        } else {
-+            mods.to_string()
++            format!("{mods} mod{}", if mods == 1 { "" } else { "s" })
 +        };
-+        draw_text(batch, atlas, F_LABEL, &mods, x2 + 12.0, y + 26.0, TEXT);
++        draw_text(batch, atlas, F_LABEL, &mods, x2 + 14.0, y + 32.0, TEXT);
++        draw_text(
++            batch,
++            atlas,
++            F_SMALL,
++            tr("home_mods_hint"),
++            x2 + 14.0,
++            y + 56.0,
++            MUTED,
++        );
++
++        // A quiet status strip keeps the lower half from reading as empty.
++        let sy = y + 94.0;
++        panel(batch, atlas, [x, sy, cw, 62.0], SURFACE, BORDER);
++        let stats = [
++            (tr("home_render"), self.settings.render_distance.to_string()),
++            (tr("home_lod"), self.settings.horizon.lod_distance.to_string()),
++            (tr("home_target"), "60 FPS".to_owned()),
++        ];
++        for (i, (label, value)) in stats.iter().enumerate() {
++            let sx = x + 18.0 + i as f32 * (cw / 3.0);
++            if i > 0 {
++                batch.fill(atlas, sx - 18.0, sy + 14.0, 1.0, 34.0, BORDER);
++            }
++            draw_text(batch, atlas, F_SMALL, label, sx, sy + 12.0, MUTED);
++            draw_text(batch, atlas, F_LABEL, value, sx, sy + 28.0, TEXT);
++        }
++
 +        if h >= 300.0 {
 +            let hint = truncate(atlas, F_SMALL, tr("home_hint"), cw);
 +            draw_text(batch, atlas, F_SMALL, &hint, x, h - 26.0, MUTED);
@@ -7078,19 +7262,31 @@ index 0000000..9cea244
 +        } else {
 +            SURFACE
 +        };
-+        batch.fill(atlas, b.x, b.y, b.w, b.h, fill);
-+        border(
++        fill_rounded(batch, atlas, [b.x, b.y, b.w, b.h], 10.0, BORDER);
++        fill_rounded(
 +            batch,
 +            atlas,
-+            [b.x, b.y, b.w, b.h],
-+            if active {
-+                ACCENT
-+            } else if hover {
-+                rgba(224, 164, 58, 160)
-+            } else {
-+                BORDER
-+            },
++            [b.x + 1.0, b.y + 1.0, b.w - 2.0, b.h - 2.0],
++            9.0,
++            fill,
 +        );
++        if b.primary {
++            // A warm top edge, like light on a metal key.
++            batch.fill(
++                atlas,
++                b.x + 10.0,
++                b.y + 1.5,
++                b.w - 20.0,
++                1.5,
++                rgba(255, 238, 196, 190),
++            );
++        }
++        if (1..=4).contains(&b.id) && active {
++            batch.fill(atlas, b.x, b.y + 8.0, 3.0, b.h - 16.0, ACCENT);
++        }
++        if hover && !b.primary {
++            batch.fill(atlas, b.x + 1.0, b.y + 9.0, 2.0, b.h - 18.0, ACCENT);
++        }
 +        let ink = if !b.enabled {
 +            MUTED
 +        } else if b.primary {
@@ -7101,7 +7297,7 @@ index 0000000..9cea244
 +            TEXT
 +        };
 +        let font = if b.id == 10 {
-+            F_BIG
++            F_PLAY
 +        } else if (20..30).contains(&b.id) || b.id >= 100 {
 +            F_SMALL
 +        } else {
@@ -7114,11 +7310,7 @@ index 0000000..9cea244
 +            b.label.clone()
 +        };
 +        let tw = text_width(atlas, font, &label);
-+        let ty = if b.id == 10 {
-+            b.y + b.h / 2.0 - 7.0
-+        } else {
-+            b.y + (b.h - 13.0) / 2.0
-+        };
++        let ty = b.y + b.h / 2.0 - if b.id == 10 { 10.0 } else { 6.5 };
 +        draw_text(
 +            batch,
 +            atlas,
@@ -7167,8 +7359,73 @@ index 0000000..9cea244
 +}
 +
 +fn panel(batch: &mut HudBatch, atlas: &HudAtlas, r: [f32; 4], fill: u32, line: u32) {
-+    batch.fill(atlas, r[0], r[1], r[2], r[3], fill);
-+    border(batch, atlas, r, line);
++    // A 10 px radius reads as a card without looking like a phone app.
++    fill_rounded(batch, atlas, r, 10.0, line);
++    fill_rounded(
++        batch,
++        atlas,
++        [r[0] + 1.0, r[1] + 1.0, r[2] - 2.0, r[3] - 2.0],
++        9.0,
++        fill,
++    );
++    // A one-pixel top light keeps a flat card from reading as a hole.
++    if r[2] > 24.0 {
++        batch.fill(
++            atlas,
++            r[0] + 10.0,
++            r[1] + 1.0,
++            r[2] - 20.0,
++            1.0,
++            rgba(255, 255, 255, 12),
++        );
++    }
++}
++/// A filled rectangle with rounded corners, built from one-pixel spans so it
++/// works with the same `fill` the rest of the UI uses (no shader or mask).
++fn fill_rounded(batch: &mut HudBatch, atlas: &HudAtlas, r: [f32; 4], radius: f32, color: u32) {
++    let [x, y, w, h] = r;
++    let radius = radius.min(w / 2.0).min(h / 2.0).max(0.0);
++    if radius < 0.5 {
++        batch.fill(atlas, x, y, w, h, color);
++        return;
++    }
++    let steps = radius.ceil() as i32;
++    for i in 0..steps {
++        let dy = i as f32 + 0.5;
++        let dx = radius - (radius * radius - (radius - dy) * (radius - dy)).max(0.0).sqrt();
++        batch.fill(atlas, x + dx, y + i as f32, w - 2.0 * dx, 1.0, color);
++        batch.fill(
++            atlas,
++            x + dx,
++            y + h - 1.0 - i as f32,
++            w - 2.0 * dx,
++            1.0,
++            color,
++        );
++    }
++    batch.fill(
++        atlas,
++        x,
++        y + radius,
++        w,
++        (h - 2.0 * radius).max(0.0),
++        color,
++    );
++}
++/// A small capsule label, for the hero's status chips.
++fn pill(
++    batch: &mut HudBatch,
++    atlas: &HudAtlas,
++    x: f32,
++    y: f32,
++    label: &str,
++    ink: u32,
++    fill: u32,
++) -> f32 {
++    let width = text_width(atlas, F_SMALL, label) + 18.0;
++    fill_rounded(batch, atlas, [x, y, width, 20.0], 7.0, fill);
++    draw_text(batch, atlas, F_SMALL, label, x + 9.0, y + 5.0, ink);
++    width
 +}
 +fn border(batch: &mut HudBatch, atlas: &HudAtlas, r: [f32; 4], color: u32) {
 +    batch.fill(atlas, r[0], r[1], r[2], 1.0, color);
@@ -7285,7 +7542,7 @@ index 0000000..9cea244
 +    }
 +}
 diff --git a/crates/horizon-client/src/lib.rs b/crates/horizon-client/src/lib.rs
-index 6de9b7c..42197d7 100644
+index 6de9b7c..428db02 100644
 --- a/crates/horizon-client/src/lib.rs
 +++ b/crates/horizon-client/src/lib.rs
 @@ -1,6 +1,7 @@
@@ -7312,6 +7569,14 @@ index 6de9b7c..42197d7 100644
  pub mod raid;
  pub mod random_sequences;
  pub mod random_tick_sections;
+@@ -198,6 +201,7 @@ pub mod ui;
+ pub mod ui_theme;
+ pub mod vanillagen;
+ pub mod vault;
++pub mod version;
+ pub mod weather;
+ pub mod widgets;
+ pub mod win_screen;
 diff --git a/crates/horizon-client/src/mod_content.rs b/crates/horizon-client/src/mod_content.rs
 index cb96fea..70f57ec 100644
 --- a/crates/horizon-client/src/mod_content.rs
@@ -8027,6 +8292,30 @@ index a2fa6b8..f4b34fb 100644
          label,
          enabled,
          id,
+diff --git a/crates/horizon-client/src/version.rs b/crates/horizon-client/src/version.rs
+new file mode 100644
+index 0000000..ffd9666
+--- /dev/null
++++ b/crates/horizon-client/src/version.rs
+@@ -0,0 +1,18 @@
++//! One place for the launcher's identity. The Switch build reads `VERSION`
++//! from here for the NACP, and every screen that shows a version pulls the
++//! same constant, so a release changes this file only.
++//!
++//! Public naming: the title is `Horizon` with no version suffix; the version
++//! scheme is `0.1.N` for builds 1-8 and `0.2.(N-9)` from build 9 on. `v9` is
++//! therefore `0.2.0`.
++
++/// The application name shown by hbmenu and in the launcher.
++pub const NAME: &str = "Horizon";
++/// The NACP author field.
++pub const AUTHOR: &str = "Horizon";
++/// The release version; keep this the only line a release edits.
++pub const VERSION: &str = "0.1.8";
++/// The Minecraft: Java Edition line this port follows.
++pub const GAME: &str = "26.3";
++/// The edition banner under the launcher title.
++pub const EDITION: &str = "Java Edition 26.3";
 diff --git a/crates/horizon-mods/src/content.rs b/crates/horizon-mods/src/content.rs
 index 494e734..3deace1 100644
 --- a/crates/horizon-mods/src/content.rs
