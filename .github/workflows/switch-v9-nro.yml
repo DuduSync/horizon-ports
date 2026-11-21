@@ -118,9 +118,9 @@ jobs:
           set -eux
           mkdir -p out
           docker run --rm -v "$PWD/makrsas:/work" -v "$PWD/out:/out" -w /work horizon-build bash -lc '
-            NAME=$(sed -n 's/.*pub const NAME: &str = "\([^"]*\)";/\1/p' crates/horizon-client/src/version.rs)
-            AUTHOR=$(sed -n 's/.*pub const AUTHOR: &str = "\([^"]*\)";/\1/p' crates/horizon-client/src/version.rs)
-            VERSION=$(sed -n 's/.*pub const VERSION: &str = "\([^"]*\)";/\1/p' crates/horizon-client/src/version.rs)
+            NAME=$(sed -n "s/.*pub const NAME: &str = \"\\([^\"]*\\)\";/\\1/p" crates/horizon-client/src/version.rs)
+            AUTHOR=$(sed -n "s/.*pub const AUTHOR: &str = \"\\([^\"]*\\)\";/\\1/p" crates/horizon-client/src/version.rs)
+            VERSION=$(sed -n "s/.*pub const VERSION: &str = \"\\([^\"]*\\)\";/\\1/p" crates/horizon-client/src/version.rs)
             nacptool --create "$NAME" "$AUTHOR" "$VERSION" /tmp/horizon.nacp --titleid=0100485952450000
             elf2nro switch/build/horizon.elf /out/Horizon-v9.nro --icon=switch/icon.jpg --nacp=/tmp/horizon.nacp
           '
