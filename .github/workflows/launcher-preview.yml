@@ -1,0 +1,50 @@
+name: launcher-preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'patches/v10.patch'
+      - '.github/workflows/launcher-preview.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone sources
+        run: |
+          set -eux
+          git clone --depth 1 --branch v0.1.1 https://github.com/MakrSas/horizon-switch.git makrsas
+          git clone --depth 1 https://github.com/tarkodev/horizon-switch.git tarkodev
+          mkdir -p makrsas/switch/vendor
+          cp -a tarkodev/switch/vendor/cpal makrsas/switch/vendor/cpal
+
+      - name: Apply patch
+        run: |
+          set -eux
+          cd makrsas
+          git apply ../patches/v10.patch
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
+            libxcursor-dev libxrandr-dev libxinerama-dev libasound2-dev libudev-dev
+
+      - name: Render the real launcher
+        run: |
+          set -eux
+          cd makrsas
+          cargo run --release -p horizon-client --example launcher_preview --no-default-features
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-preview
+          path: makrsas/preview-out/*.png
