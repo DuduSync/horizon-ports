@@ -98,6 +98,6 @@ v7 adds the branded loading screen while the integrated server opens a world (no
 ## Status
 
 - Audio and full builds pass in CI.
-- Content mods and the Microsoft device-code flow are in v8; code mods (`wasmtime`) are still out of scope.
-- v9 is the launcher-first design pass: shared version constant, preview renderer, rounded surfaces and the new Home hero.
+- v8 is the single build: launcher-first boot, content mods and the Microsoft device-code flow, plus the new launcher design and the shared version constant.
+- v9 will be the next feature line (`0.2.0`).
 - The install folder is `/switch/horizon/`; captures from the launcher go to `/switch/horizon/captures/`.
