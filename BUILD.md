@@ -79,7 +79,16 @@ Build run `44813489808` (cached: 30 minutes total):
 
 v6 adds the branded loading screen, the launcher interface-size setting (100–175%, 150% default), controller/analog navigation with focus outlines on launcher buttons and mod rows, mod-install logging, and the Switch caps of 16 chunks render distance / 128 chunks LOD that prevent the NVK section-arena OOM seen at 64 chunks. The workflow caches NVK, Docker layers and the Cargo target; the next builds should stay near half an hour.
 
-## v8 artifacts (current NRO)
+## v9 artifacts (current NRO)
+
+Build run `44848313848` (one combined v9; NACP title **Horizon**, author **Horizon**, version **0.2.0**):
+
+- `/switch/Horizon.nro` — 54,653,772 bytes, SHA-256 `227ebea38cff5463f05d1150966aee41dfbb945ad489b4d0db3b2960c92b9d4e`.
+- `horizon.elf` — 64,892,136 bytes, SHA-256 `2196911cad172385930aa21ca12caf6fad816ec2944b893cf46bef7075583a8e`.
+
+v9 corrects the launcher palette byte order (blue surfaces, amber accent), rebuilds the account screen as two cards with the QR/code column and a compact Cancel, accepts unknown content-mod fields such as `shapes`, copies overlays to FAT without permission metadata, and logs the Microsoft/Xbox sign-in transport step. TNT/LAN tick spikes are still the next performance work.
+
+## v8 artifacts (previous NRO)
 
 Build run `44842470993` (one combined v8; NACP title **Horizon**, author **Horizon**, version **0.1.8**):
 
