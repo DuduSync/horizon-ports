@@ -4769,7 +4769,7 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..21e141f
+index 0000000..2694ed5
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
 @@ -0,0 +1,3377 @@
@@ -6628,7 +6628,7 @@ index 0000000..21e141f
 +}
 +fn pin_rect(w: f32, _h: f32) -> [f32; 4] {
 +    let (x, _) = content(w);
-+    [x, 520.0, 300.0, 28.0]
++    [x, 530.0, 300.0, 28.0]
 +}
 +
 +// ----- Drawing -------------------------------------------------------------------------------------
@@ -7608,7 +7608,7 @@ index 0000000..21e141f
 +            F_SMALL,
 +            tr("account_pin"),
 +            r[0],
-+            r[1] - 32.0,
++            r[1] - 20.0,
 +            MUTED,
 +        );
 +        batch.fill(atlas, r[0], r[1], r[2], r[3], SURFACE_2);
