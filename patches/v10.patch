@@ -107,6 +107,206 @@ index a75b0a6..ae284b7 100644
  
  [target.'cfg(not(target_os = "horizon"))'.dependencies]
  wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
+diff --git a/crates/horizon-client/examples/launcher_preview.rs b/crates/horizon-client/examples/launcher_preview.rs
+new file mode 100644
+index 0000000..a0d4046
+--- /dev/null
++++ b/crates/horizon-client/examples/launcher_preview.rs
+@@ -0,0 +1,194 @@
++//! Render the real launcher to PNG, without a window or GPU.
++//!
++//! This is the preview the Switch will draw: it builds the same `HudBatch`
++//! from `Launcher::draw`, then software-rasterizes its triangles and the
++//! font atlas patches. Run on a desktop host:
++//!
++//! ```sh
++//! cargo run -p horizon-client --example launcher_preview --no-default-features
++//! ```
++//!
++//! It writes `preview-out/{home,mods,account,settings}.png`.
++
++use horizon_client::{
++    account_ui::Phase,
++    hud::{HudAtlas, HudBatch, HudVertex},
++    launcher_v2::{Installed, InstalledKind, Launcher, Tab},
++    qr::Qr,
++};
++use std::{
++    fs,
++    path::Path,
++    time::{Duration, Instant, SystemTime},
++};
++
++const OUT_W: u32 = 1280;
++const OUT_H: u32 = 720;
++
++fn main() {
++    let root = std::env::temp_dir().join("horizon-launcher-preview");
++    let saves = root.join("saves");
++    let resources = root.join("resources");
++    let out = Path::new("preview-out");
++    fs::create_dir_all(&saves).unwrap();
++    fs::create_dir_all(&resources).unwrap();
++    fs::create_dir_all(out).unwrap();
++
++    let atlas = HudAtlas::fonts(&resources).expect("font atlas");
++    let mut launcher = Launcher::new(&saves, &resources);
++    launcher.language = "pt_br".into();
++    launcher.installed.push(Installed {
++        path: root.join("horizon-mods/flesh_to_leather-1.0.0.hmod"),
++        file: "flesh_to_leather-1.0.0.hmod".into(),
++        id: "flesh_to_leather".into(),
++        title: "Flesh to Leather".into(),
++        version: "1.0.0".into(),
++        kind: InstalledKind::Mod,
++        enabled: true,
++    });
++    launcher.recent = Some(horizon_client::title::WorldEntry {
++        folder: "Meu Mundo".into(),
++        name: "Meu Mundo".into(),
++        creative: false,
++        modified: SystemTime::now() - Duration::from_secs(2 * 3600),
++        commands: false,
++        version: "26.3".into(),
++    });
++
++    let mut home = launcher;
++    home.tab = Tab::Home;
++    draw(&atlas, &home, out, "home");
++
++    let mut mods = Launcher::new(&saves, &resources);
++    mods.language = "pt_br".into();
++    mods.tab = Tab::Mods;
++    draw(&atlas, &mods, out, "mods");
++
++    let mut account = Launcher::new(&saves, &resources);
++    account.language = "pt_br".into();
++    account.tab = Tab::Account;
++    account.account.phase = Phase::Waiting;
++    account.account.user_code = "THGZSD8Y".into();
++    account.account.verification_uri = "https://www.microsoft.com/link".into();
++    account.account.qr = Qr::encode(&account.account.verification_uri);
++    draw(&atlas, &account, out, "account");
++
++    let mut settings = Launcher::new(&saves, &resources);
++    settings.language = "pt_br".into();
++    settings.tab = Tab::Settings;
++    draw(&atlas, &settings, out, "settings");
++}
++
++fn draw(atlas: &HudAtlas, launcher: &Launcher, out: &Path, name: &str) {
++    let mut batch = HudBatch::launcher([OUT_W, OUT_H], 1.0);
++    launcher.draw(
++        atlas,
++        &mut batch,
++        (700.0, 300.0),
++        Instant::now() - Duration::from_millis(700),
++    );
++
++    // The real atlas starts with no uploaded pixels; the font patches are
++    // exactly what the renderer would upload before presenting.
++    let mut pixels = vec![0u8; (atlas.width * atlas.height * 4) as usize];
++    for patch in &batch.patches {
++        for row in 0..patch.height as usize {
++            let src = row * patch.width as usize * 4;
++            let dst = ((patch.y as usize + row) * atlas.width as usize + patch.x as usize) * 4;
++            let len = patch.width as usize * 4;
++            if dst + len <= pixels.len() && src + len <= patch.rgba.len() {
++                pixels[dst..dst + len].copy_from_slice(&patch.rgba[src..src + len]);
++            }
++        }
++    }
++
++    let image = rasterize(&batch, &pixels, atlas.width, atlas.height);
++    let path = out.join(format!("{name}.png"));
++    let file = fs::File::create(&path).unwrap();
++    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), OUT_W, OUT_H);
++    encoder.set_color(png::ColorType::Rgba);
++    encoder.set_depth(png::BitDepth::Eight);
++    encoder.write_header().unwrap().write_image_data(&image).unwrap();
++    println!("wrote {}", path.display());
++}
++
++fn rasterize(batch: &HudBatch, atlas: &[u8], aw: u32, ah: u32) -> Vec<u8> {
++    let mut out = vec![0u8; (OUT_W * OUT_H * 4) as usize];
++    let scale = batch.scale;
++    for tri in batch.vertices.chunks_exact(3) {
++        if tri.len() != 3 {
++            break;
++        }
++        let p = [tri[0], tri[1], tri[2]].map(|v| [v.pos[0] * scale, v.pos[1] * scale]);
++        let min_x = p.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min).floor().max(0.0) as i32;
++        let max_x = p.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max).ceil().min(OUT_W as f32 - 1.0) as i32;
++        let min_y = p.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min).floor().max(0.0) as i32;
++        let max_y = p.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max).ceil().min(OUT_H as f32 - 1.0) as i32;
++        if min_x > max_x || min_y > max_y {
++            continue;
++        }
++        let area = edge(p[0], p[1], p[2]);
++        if area.abs() < f32::EPSILON {
++            continue;
++        }
++        let constant_uv = uv_eq(tri[0], tri[1]) && uv_eq(tri[1], tri[2]);
++        for y in min_y..=max_y {
++            for x in min_x..=max_x {
++                let q = [x as f32 + 0.5, y as f32 + 0.5];
++                let w0 = edge(p[1], p[2], q) / area;
++                let w1 = edge(p[2], p[0], q) / area;
++                let w2 = edge(p[0], p[1], q) / area;
++                if w0 < -0.0001 || w1 < -0.0001 || w2 < -0.0001 {
++                    continue;
++                }
++                let (mut sr, mut sg, mut sb, mut sa) = unpack(tri[0].color);
++                if !constant_uv {
++                    let u = tri[0].uv[0] * w0 + tri[1].uv[0] * w1 + tri[2].uv[0] * w2;
++                    let v = tri[0].uv[1] * w0 + tri[1].uv[1] * w1 + tri[2].uv[1] * w2;
++                    let (tr, tg, tb, ta) = sample(atlas, aw, ah, u, v);
++                    sr = (u32::from(sr) * u32::from(tr) / 255) as u8;
++                    sg = (u32::from(sg) * u32::from(tg) / 255) as u8;
++                    sb = (u32::from(sb) * u32::from(tb) / 255) as u8;
++                    sa = (u32::from(sa) * u32::from(ta) / 255) as u8;
++                }
++                if sa == 0 {
++                    continue;
++                }
++                let i = ((y as u32 * OUT_W + x as u32) * 4) as usize;
++                let a = f32::from(sa) / 255.0;
++                out[i] = (f32::from(sr) * a + f32::from(out[i]) * (1.0 - a)) as u8;
++                out[i + 1] = (f32::from(sg) * a + f32::from(out[i + 1]) * (1.0 - a)) as u8;
++                out[i + 2] = (f32::from(sb) * a + f32::from(out[i + 2]) * (1.0 - a)) as u8;
++                out[i + 3] = 255;
++            }
++        }
++    }
++    out
++}
++
++fn edge(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
++    (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
++}
++
++fn uv_eq(a: HudVertex, b: HudVertex) -> bool {
++    (a.uv[0] - b.uv[0]).abs() < 1e-6 && (a.uv[1] - b.uv[1]).abs() < 1e-6
++}
++
++fn unpack(c: u32) -> (u8, u8, u8, u8) {
++    (
++        (c & 0xff) as u8,
++        ((c >> 8) & 0xff) as u8,
++        ((c >> 16) & 0xff) as u8,
++        ((c >> 24) & 0xff) as u8,
++    )
++}
++
++fn sample(atlas: &[u8], w: u32, h: u32, u: f32, v: f32) -> (u8, u8, u8, u8) {
++    let x = (u.clamp(0.0, 1.0) * (w.saturating_sub(1)) as f32).round() as u32;
++    let y = (v.clamp(0.0, 1.0) * (h.saturating_sub(1)) as f32).round() as u32;
++    let i = ((y * w + x) * 4) as usize;
++    if i + 3 >= atlas.len() {
++        return (255, 255, 255, 255);
++    }
++    (atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3])
++}
 diff --git a/crates/horizon-client/src/account_ui.rs b/crates/horizon-client/src/account_ui.rs
 new file mode 100644
 index 0000000..b1089e8
@@ -4559,7 +4759,7 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..e4e1ffe
+index 0000000..096d783
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
 @@ -0,0 +1,3322 @@
@@ -4706,7 +4906,7 @@ index 0000000..e4e1ffe
 +    pub page: usize,
 +    pub installed: Vec<Installed>,
 +    /// The most recent save, for the Home "Continue" card.
-+    recent: Option<crate::title::WorldEntry>,
++    pub recent: Option<crate::title::WorldEntry>,
 +    mod_list: ModList,
 +    index: Option<Index>,
 +    pub index_status: String,
