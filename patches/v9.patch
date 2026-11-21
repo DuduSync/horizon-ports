@@ -702,10 +702,10 @@ index b899ea5..76bccbd 100644
  /// Why joining a server through the session service failed, like the
 diff --git a/crates/horizon-client/src/auth/login.rs b/crates/horizon-client/src/auth/login.rs
 new file mode 100644
-index 0000000..a7b9423
+index 0000000..0f0e7cc
 --- /dev/null
 +++ b/crates/horizon-client/src/auth/login.rs
-@@ -0,0 +1,1076 @@
+@@ -0,0 +1,1080 @@
 +//! Microsoft sign-in for the in-game launcher (docs/microsoft-account.md,
 +//! LAUNCHER-SPEC.md §3): the OAuth device-code flow, then Xbox Live, XSTS, the
 +//! Minecraft services, the ownership check and the profile. The result is an
@@ -915,13 +915,17 @@ index 0000000..a7b9423
 +    let response = match result {
 +        Ok(response) => response,
 +        Err(ureq::Error::Status(_, response)) => response,
-+        Err(ureq::Error::Transport(_)) => {
++        Err(ureq::Error::Transport(error)) => {
++            log::warn!("Horizon: {service} transport: {error:?}");
 +            return Err(format!(
 +                "Could not reach {service}. Check your internet connection."
 +            ));
 +        }
 +    };
 +    let status = response.status();
++    if !(200..300).contains(&status) {
++        log::warn!("Horizon: {service} answered HTTP {status}");
++    }
 +    let text = response.into_string().unwrap_or_default();
 +    Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
 +}
@@ -4555,10 +4559,10 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..c28cebf
+index 0000000..d0c939c
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
-@@ -0,0 +1,2971 @@
+@@ -0,0 +1,3073 @@
 +//! The Switch launcher: a separate, dark screen shown before the Minecraft
 +//! title. Pressing Play changes `Title::Mode::Launcher` to the original
 +//! `Title::Mode::Main`; the game's own title is untouched.
@@ -4601,18 +4605,20 @@ index 0000000..c28cebf
 +const F_MONO: &str = "horizon:ui_mono12";
 +
 +// The launcher's palette: deep blue-black neutrals, one warm amber accent.
-+const BG: u32 = 0xff070a10;
-+const SIDEBAR: u32 = 0xff0b1018;
-+const SURFACE: u32 = 0xff121822;
-+const SURFACE_2: u32 = 0xff1a2330;
-+const BORDER: u32 = 0xff2a3646;
-+const TEXT: u32 = 0xfff2f5f9;
-+const MUTED: u32 = 0xff9aa4b2;
-+const ACCENT: u32 = 0xfff0be63;
-+const ACCENT_INK: u32 = 0xff16120a;
-+const OK: u32 = 0xff7fd3a0;
-+const BAD: u32 = 0xfff0a0a0;
-+const WARN: u32 = 0xffe6c76a;
++// The HUD vertex colour is RGBA in memory, i.e. 0xAABBGGRR; these literals
++// are written in its byte order, not in CSS #RRGGBB.
++const BG: u32 = 0xff100a07;
++const SIDEBAR: u32 = 0xff18100b;
++const SURFACE: u32 = 0xff221812;
++const SURFACE_2: u32 = 0xff30231a;
++const BORDER: u32 = 0xff46362a;
++const TEXT: u32 = 0xfff9f5f2;
++const MUTED: u32 = 0xffb2a49a;
++const ACCENT: u32 = 0xff63bef0;
++const ACCENT_INK: u32 = 0xff0a1216;
++const OK: u32 = 0xffa0d37f;
++const BAD: u32 = 0xffa0a0f0;
++const WARN: u32 = 0xff6ac7e6;
 +
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub enum Tab {
@@ -5483,7 +5489,11 @@ index 0000000..c28cebf
 +        "Nome inválido: 1 a 16 caracteres, sem espaços.",
 +    ),
 +    ("account_title", "Conta"),
-+    ("account_sub", "Microsoft device code"),
++    ("account_sub", "Entre com a Microsoft para jogar online e usar sua skin."),
++    ("account_label", "CONTA"),
++    ("account_enter_hint", "Abra o link no celular e digite o código."),
++    ("account_why", "Conta, skins e servidores online."),
++    ("account_pin_placeholder", "Opcional"),
 +    ("account_sign_in", "Entrar com Microsoft"),
 +    ("account_load", "Carregar conta salva"),
 +    ("account_sign_out", "Sair"),
@@ -5676,7 +5686,11 @@ index 0000000..c28cebf
 +        "Invalid name: 1 to 16 characters, without spaces.",
 +    ),
 +    ("account_title", "Account"),
-+    ("account_sub", "Microsoft device code"),
++    ("account_sub", "Sign in with Microsoft to play online and use your skin."),
++    ("account_label", "ACCOUNT"),
++    ("account_enter_hint", "Open the link on your phone and type the code."),
++    ("account_why", "Account, skins and online servers."),
++    ("account_pin_placeholder", "Optional"),
 +    ("account_sign_in", "Sign in with Microsoft"),
 +    ("account_load", "Load saved account"),
 +    ("account_sign_out", "Sign out"),
@@ -6058,20 +6072,21 @@ index 0000000..c28cebf
 +                }
 +            }
 +            Tab::Account => {
-+                let (x, cw) = content(w);
-+                let right_x = x + 240.0;
-+                let right_w = (x + cw - right_x).max(120.0);
++                let (left, _) = account_cards(w);
++                let lx = left[0] + 14.0;
++                let lw = left[2] - 28.0;
++                let by = left[1] + 150.0;
 +                match self.account.phase {
 +                    Phase::SignedOut => {
 +                        buttons.push(button(
-+                            [right_x, 182.0, right_w, 30.0],
++                            [lx, by, lw, 30.0],
 +                            tr("account_sign_in"),
 +                            true,
 +                            20,
 +                            true,
 +                        ));
 +                        buttons.push(button(
-+                            [right_x, 218.0, right_w, 26.0],
++                            [lx, by + 36.0, lw, 26.0],
 +                            tr("account_load"),
 +                            true,
 +                            21,
@@ -6080,7 +6095,7 @@ index 0000000..c28cebf
 +                    }
 +                    Phase::Starting | Phase::Waiting | Phase::Completing => {
 +                        buttons.push(button(
-+                            [right_x, 218.0, right_w, 28.0],
++                            [lx, by + 20.0, 120.0, 30.0],
 +                            tr("account_cancel"),
 +                            true,
 +                            23,
@@ -6089,7 +6104,7 @@ index 0000000..c28cebf
 +                    }
 +                    Phase::SignedIn => {
 +                        buttons.push(button(
-+                            [right_x, 218.0, right_w, 30.0],
++                            [lx, by, 120.0, 30.0],
 +                            tr("account_sign_out"),
 +                            true,
 +                            22,
@@ -6108,14 +6123,14 @@ index 0000000..c28cebf
 +                            tr("account_retry")
 +                        };
 +                        buttons.push(button(
-+                            [right_x, 182.0, right_w, 30.0],
++                            [lx, by + 20.0, 112.0, 30.0],
 +                            label,
 +                            true,
 +                            24,
 +                            true,
 +                        ));
 +                        buttons.push(button(
-+                            [right_x, 218.0, right_w, 26.0],
++                            [lx + 120.0, by + 20.0, (lw - 120.0).max(80.0), 26.0],
 +                            tr("account_load"),
 +                            true,
 +                            21,
@@ -6348,9 +6363,15 @@ index 0000000..c28cebf
 +    let (x, cw) = content(w);
 +    [x + 158.0, 140.0, (cw - 254.0).max(120.0), 28.0]
 +}
++fn account_cards(w: f32) -> ([f32; 4], [f32; 4]) {
++    let (x, cw) = content(w);
++    let left = [x, 96.0, 250.0, 220.0];
++    let right = [x + 262.0, 96.0, (cw - 262.0).max(200.0), 220.0];
++    (left, right)
++}
 +fn pin_rect(w: f32, _h: f32) -> [f32; 4] {
 +    let (x, _) = content(w);
-+    [x, 332.0, 200.0, 26.0]
++    [x, 344.0, 250.0, 26.0]
 +}
 +
 +// ----- Drawing -------------------------------------------------------------------------------------
@@ -6879,47 +6900,40 @@ index 0000000..c28cebf
 +    }
 +
 +    fn draw_account(&self, atlas: &HudAtlas, batch: &mut HudBatch, w: f32, h: f32) {
-+        let (x, cw) = content(w);
++        let (left, right) = account_cards(w);
++        panel(batch, atlas, left, SURFACE, BORDER);
++        panel(batch, atlas, right, SURFACE, BORDER);
++        let lx = left[0] + 14.0;
++        let ly = left[1] + 12.0;
++        let rx = right[0] + 14.0;
++        let ry = right[1] + 12.0;
++        draw_text(batch, atlas, F_SMALL, tr("account_label"), lx, ly, MUTED);
++
 +        match self.account.phase {
 +            Phase::SignedIn => {
-+                panel(
-+                    batch,
-+                    atlas,
-+                    [x, 96.0, cw.min(420.0), 96.0],
-+                    SURFACE,
-+                    BORDER,
-+                );
-+                draw_text(
-+                    batch,
-+                    atlas,
-+                    F_SMALL,
-+                    tr("account_signed_in"),
-+                    x + 14.0,
-+                    106.0,
-+                    OK,
-+                );
++                draw_text(batch, atlas, F_SMALL, tr("account_signed_in"), lx, ly + 20.0, OK);
 +                draw_text(
 +                    batch,
 +                    atlas,
 +                    F_TITLE,
-+                    &self.account.account_name,
-+                    x + 14.0,
-+                    126.0,
++                    &truncate(atlas, F_TITLE, &self.account.account_name, left[2] - 28.0),
++                    lx,
++                    ly + 38.0,
 +                    TEXT,
 +                );
 +                draw_text(
 +                    batch,
 +                    atlas,
 +                    F_MONO,
-+                    &self.account.account_uuid,
-+                    x + 14.0,
-+                    164.0,
++                    &truncate(atlas, F_MONO, &self.account.account_uuid, left[2] - 28.0),
++                    lx,
++                    ly + 78.0,
 +                    MUTED,
 +                );
 +                if let Some(notice) = &self.account.notice {
-+                    for (i, line) in wrap(atlas, F_SMALL, notice, cw.min(420.0) - 28.0)
++                    for (i, line) in wrap(atlas, F_SMALL, notice, left[2] - 28.0)
 +                        .iter()
-+                        .take(2)
++                        .take(3)
 +                        .enumerate()
 +                    {
 +                        draw_text(
@@ -6927,8 +6941,8 @@ index 0000000..c28cebf
 +                            atlas,
 +                            F_SMALL,
 +                            line,
-+                            x + 14.0,
-+                            204.0 + i as f32 * 9.0,
++                            lx,
++                            ly + 106.0 + i as f32 * 10.0,
 +                            WARN,
 +                        );
 +                    }
@@ -6938,50 +6952,24 @@ index 0000000..c28cebf
 +                    atlas,
 +                    F_SMALL,
 +                    tr("account_signed_in_help"),
-+                    x,
-+                    260.0,
++                    lx,
++                    left[1] + left[3] - 22.0,
 +                    MUTED,
 +                );
++                draw_text(batch, atlas, F_SMALL, tr("account_why"), rx, ry + 20.0, MUTED);
++                draw_text(batch, atlas, F_SMALL, tr("account_enter_hint"), rx, ry + 44.0, MUTED);
 +            }
 +            Phase::Starting | Phase::Waiting | Phase::Completing => {
-+                // The QR's real extent is `cell * (size + 2*margin)`, which is
-+                // often larger than `side`; the old layout put the code and the
-+                // status over the white border. Lay the column out from the
-+                // actual size and put the status below it.
-+                let side = 168.0;
-+                let actual = self
-+                    .account
-+                    .qr
-+                    .as_ref()
-+                    .map_or(side, |qr| qr_extent(side, qr));
-+                if let Some(qr) = &self.account.qr {
-+                    draw_qr(batch, atlas, x, 96.0, side, qr);
-+                }
-+                let gap = 20.0;
-+                let mut right_x = x + actual + gap;
-+                let mut right_w = (x + cw - right_x).max(0.0);
-+                let mut right_y = 96.0;
-+                if right_w < 190.0 {
-+                    // Not enough room beside the QR on a narrow screen: use
-+                    // the full width under it.
-+                    right_x = x;
-+                    right_w = cw;
-+                    right_y = 96.0 + actual + 14.0;
-+                }
 +                draw_text(
 +                    batch,
 +                    atlas,
-+                    F_SMALL,
-+                    tr("account_code_label"),
-+                    right_x,
-+                    right_y,
-+                    MUTED,
++                    F_TITLE,
++                    tr("home_account_off"),
++                    lx,
++                    ly + 18.0,
++                    TEXT,
 +                );
-+                let code = pretty_code(&self.account.user_code);
-+                draw_text(batch, atlas, F_CODE, &code, right_x, right_y + 20.0, ACCENT);
-+                let uri = truncate(atlas, F_SMALL, &self.account.verification_uri, right_w);
-+                draw_text(batch, atlas, F_SMALL, &uri, right_x, right_y + 68.0, TEXT);
-+                for (i, line) in wrap(atlas, F_SMALL, tr("account_qr_hint"), right_w)
++                for (i, line) in wrap(atlas, F_SMALL, tr("account_offline_note"), left[2] - 28.0)
 +                    .iter()
 +                    .take(3)
 +                    .enumerate()
@@ -6991,8 +6979,8 @@ index 0000000..c28cebf
 +                        atlas,
 +                        F_SMALL,
 +                        line,
-+                        right_x,
-+                        right_y + 84.0 + i as f32 * 10.0,
++                        lx,
++                        ly + 58.0 + i as f32 * 10.0,
 +                        MUTED,
 +                    );
 +                }
@@ -7001,12 +6989,7 @@ index 0000000..c28cebf
 +                    Phase::Waiting => tr("account_waiting"),
 +                    _ => tr("account_completing"),
 +                };
-+                let status_y = if right_y > 96.0 {
-+                    right_y + 124.0
-+                } else {
-+                    96.0 + actual + 14.0
-+                };
-+                for (i, line) in wrap(atlas, F_SMALL, status, cw.min(520.0))
++                for (i, line) in wrap(atlas, F_SMALL, status, left[2] - 28.0)
 +                    .iter()
 +                    .take(2)
 +                    .enumerate()
@@ -7016,15 +6999,105 @@ index 0000000..c28cebf
 +                        atlas,
 +                        F_SMALL,
 +                        line,
-+                        x,
-+                        status_y + i as f32 * 10.0,
++                        lx,
++                        ly + 96.0 + i as f32 * 10.0,
++                        WARN,
++                    );
++                }
++                draw_text(
++                    batch,
++                    atlas,
++                    F_SMALL,
++                    tr("account_enter_hint"),
++                    lx,
++                    left[1] + left[3] - 74.0,
++                    MUTED,
++                );
++
++                let side = 120.0;
++                let actual = self
++                    .account
++                    .qr
++                    .as_ref()
++                    .map_or(side, |qr| qr_extent(side, qr));
++                let qx = rx;
++                let qy = ry + 18.0;
++                draw_text(batch, atlas, F_SMALL, tr("account_sign_in"), rx, ry, ACCENT);
++                if let Some(qr) = &self.account.qr {
++                    draw_qr(batch, atlas, qx, qy, side, qr);
++                }
++                let tx = qx + actual + 16.0;
++                let tw = (right[0] + right[2] - tx - 12.0).max(100.0);
++                draw_text(batch, atlas, F_SMALL, tr("account_code_label"), tx, qy, MUTED);
++                let code = pretty_code(&self.account.user_code);
++                draw_text(batch, atlas, F_TITLE, &code, tx, qy + 16.0, ACCENT);
++                let uri = truncate(atlas, F_SMALL, &self.account.verification_uri, tw);
++                draw_text(batch, atlas, F_SMALL, &uri, tx, qy + 58.0, TEXT);
++                for (i, line) in wrap(atlas, F_SMALL, tr("account_qr_hint"), tw)
++                    .iter()
++                    .take(3)
++                    .enumerate()
++                {
++                    draw_text(
++                        batch,
++                        atlas,
++                        F_SMALL,
++                        line,
++                        tx,
++                        qy + 76.0 + i as f32 * 10.0,
++                        MUTED,
++                    );
++                }
++                let status = match self.account.phase {
++                    Phase::Starting => tr("account_starting"),
++                    Phase::Waiting => tr("account_waiting"),
++                    _ => tr("account_completing"),
++                };
++                for (i, line) in wrap(atlas, F_SMALL, status, right[2] - 28.0)
++                    .iter()
++                    .take(2)
++                    .enumerate()
++                {
++                    draw_text(
++                        batch,
++                        atlas,
++                        F_SMALL,
++                        line,
++                        rx,
++                        right[1] + 188.0 + i as f32 * 10.0,
 +                        WARN,
 +                    );
 +                }
 +            }
 +            Phase::SignedOut => {
-+                draw_text(batch, atlas, F_TITLE, tr("account_offline"), x, 106.0, TEXT);
-+                for (i, line) in wrap(atlas, F_SMALL, tr("account_offline_note"), cw.min(420.0))
++                draw_text(
++                    batch,
++                    atlas,
++                    F_TITLE,
++                    tr("home_account_off"),
++                    lx,
++                    ly + 18.0,
++                    TEXT,
++                );
++                for (i, line) in wrap(atlas, F_SMALL, tr("account_offline_note"), left[2] - 28.0)
++                    .iter()
++                    .take(3)
++                    .enumerate()
++                {
++                    draw_text(
++                        batch,
++                        atlas,
++                        F_SMALL,
++                        line,
++                        lx,
++                        ly + 58.0 + i as f32 * 10.0,
++                        MUTED,
++                    );
++                }
++                draw_text(batch, atlas, F_SMALL, tr("account_why"), lx, ly + 102.0, MUTED);
++                draw_text(batch, atlas, F_TITLE, "Microsoft", rx, ry + 18.0, TEXT);
++                draw_text(batch, atlas, F_SMALL, tr("account_why"), rx, ry + 58.0, MUTED);
++                for (i, line) in wrap(atlas, F_SMALL, tr("account_enter_hint"), right[2] - 28.0)
 +                    .iter()
 +                    .take(2)
 +                    .enumerate()
@@ -7034,8 +7107,8 @@ index 0000000..c28cebf
 +                        atlas,
 +                        F_SMALL,
 +                        line,
-+                        x,
-+                        146.0 + i as f32 * 10.0,
++                        rx,
++                        ry + 78.0 + i as f32 * 10.0,
 +                        MUTED,
 +                    );
 +                }
@@ -7047,7 +7120,7 @@ index 0000000..c28cebf
 +                    WARN
 +                };
 +                for (i, line) in self
-+                    .account_error_lines(atlas, cw.min(420.0))
++                    .account_error_lines(atlas, left[2] - 28.0)
 +                    .iter()
 +                    .take(6)
 +                    .enumerate()
@@ -7055,25 +7128,47 @@ index 0000000..c28cebf
 +                    draw_text(
 +                        batch,
 +                        atlas,
-+                        F_BODY,
++                        F_SMALL,
 +                        line,
-+                        x,
-+                        100.0 + i as f32 * 16.0,
++                        lx,
++                        ly + 20.0 + i as f32 * 12.0,
 +                        color,
++                    );
++                }
++                draw_text(batch, atlas, F_TITLE, "Microsoft", rx, ry + 18.0, TEXT);
++                for (i, line) in wrap(atlas, F_SMALL, tr("account_enter_hint"), right[2] - 28.0)
++                    .iter()
++                    .take(2)
++                    .enumerate()
++                {
++                    draw_text(
++                        batch,
++                        atlas,
++                        F_SMALL,
++                        line,
++                        rx,
++                        ry + 58.0 + i as f32 * 10.0,
++                        MUTED,
 +                    );
 +                }
 +            }
 +        }
 +        self.draw_pin_field(atlas, batch, w, h);
-+        if let Some(notice) = &self.account.notice {
-+            if self.account.phase != Phase::SignedIn {
++        if let Some(notice) = &self.account.notice
++            && self.account.phase != Phase::SignedIn
++        {
++            for (i, line) in wrap(atlas, F_SMALL, notice, left[2] - 28.0)
++                .iter()
++                .take(2)
++                .enumerate()
++            {
 +                draw_text(
 +                    batch,
 +                    atlas,
 +                    F_SMALL,
-+                    &truncate(atlas, F_SMALL, notice, cw),
-+                    x,
-+                    288.0,
++                    line,
++                    lx,
++                    left[1] + left[3] + 64.0 + i as f32 * 10.0,
 +                    WARN,
 +                );
 +            }
@@ -7107,7 +7202,7 @@ index 0000000..c28cebf
 +            if self.account.pin_focused {
 +                String::new()
 +            } else {
-+                tr("account_pin_hint_empty").to_owned()
++                tr("account_pin_placeholder").to_owned()
 +            }
 +        } else {
 +            "*".repeat(self.account.pin.chars().count())
@@ -7368,6 +7463,17 @@ index 0000000..c28cebf
 +        9.0,
 +        fill,
 +    );
++    // A one-pixel top light keeps a flat card from reading as a hole.
++    if r[2] > 24.0 {
++        batch.fill(
++            atlas,
++            r[0] + 10.0,
++            r[1] + 1.0,
++            r[2] - 20.0,
++            1.0,
++            rgba(255, 255, 255, 12),
++        );
++    }
 +}
 +/// A filled rectangle with rounded corners, built from one-pixel spans so it
 +/// works with the same `fill` the rest of the UI uses (no shader or mask).
@@ -7567,10 +7673,31 @@ index 6de9b7c..428db02 100644
  pub mod widgets;
  pub mod win_screen;
 diff --git a/crates/horizon-client/src/mod_content.rs b/crates/horizon-client/src/mod_content.rs
-index cb96fea..70f57ec 100644
+index cb96fea..1c944ea 100644
 --- a/crates/horizon-client/src/mod_content.rs
 +++ b/crates/horizon-client/src/mod_content.rs
-@@ -861,7 +861,22 @@ impl Overlay<'_> {
+@@ -809,10 +809,17 @@ struct Overlay<'a> {
+ }
+ impl Overlay<'_> {
+     fn new<'a>(base: &'a Path, out: &'a Path) -> Result<Overlay<'a>> {
+-        if fs::symlink_metadata(out).is_ok() {
+-            fs::remove_dir_all(out)?;
++        // The cache path may have been left as a file by an interrupted run;
++        // `remove_dir_all` on a file is EINVAL on the Switch's FAT.
++        if let Ok(meta) = fs::symlink_metadata(out) {
++            if meta.is_dir() {
++                fs::remove_dir_all(out)
++                    .map_err(|e| format!("{}: {e}", out.display()))?;
++            } else {
++                fs::remove_file(out).map_err(|e| format!("{}: {e}", out.display()))?;
++            }
+         }
+-        fs::create_dir_all(out)?;
++        fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+         let overlay = Overlay { base, out };
+         overlay.link_children(Path::new(""))?;
+         Ok(overlay)
+@@ -861,7 +868,35 @@ impl Overlay<'_> {
          Ok(())
      }
  }
@@ -7581,20 +7708,33 @@ index cb96fea..70f57ec 100644
 +    // the cache instead. `resource_root`'s stamp reuses it until a mod or the
 +    // base changes.
 +    if target.is_dir() {
-+        fs::create_dir_all(at)?;
-+        for entry in fs::read_dir(target)?.flatten() {
++        fs::create_dir_all(at).map_err(|e| {
++            std::io::Error::new(e.kind(), format!("{}: {e}", at.display()))
++        })?;
++        for entry in fs::read_dir(target)
++            .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", target.display())))?
++            .flatten()
++        {
 +            link(&entry.path(), &at.join(entry.file_name()))?;
 +        }
 +        Ok(())
 +    } else {
-+        fs::copy(target, at).map(|_| ())
++        // `fs::copy` also copies Unix permissions, which the SD card's FAT
++        // rejects with EINVAL; copy the bytes only.
++        let mut source = fs::File::open(target)
++            .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", target.display())))?;
++        let mut out = fs::File::create(at)
++            .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", at.display())))?;
++        std::io::copy(&mut source, &mut out)
++            .map(|_| ())
++            .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", at.display())))
 +    }
 +}
 +#[cfg(all(unix, not(target_os = "horizon")))]
  fn link(target: &Path, at: &Path) -> std::io::Result<()> {
      std::os::unix::fs::symlink(target, at)
  }
-@@ -1276,6 +1291,11 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
+@@ -1276,6 +1311,11 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
      for warning in build(base, mods, &out)? {
          log::warn!("Horizon: {warning}");
      }
@@ -7606,7 +7746,7 @@ index cb96fea..70f57ec 100644
      fs::write(out.join(STAMP), stamp)?;
      Ok(out)
  }
-@@ -1286,6 +1306,27 @@ const WARNINGS: &str = "horizon-mod-content-warnings.txt";
+@@ -1286,6 +1326,27 @@ const WARNINGS: &str = "horizon-mod-content-warnings.txt";
  /// In a root built by [`resource_root`]: what it was built from.
  const STAMP: &str = "horizon-mod-content.stamp";
  
@@ -7634,7 +7774,7 @@ index cb96fea..70f57ec 100644
  /// What a content root is built from: this build of the game, the base's
  /// manifest and the tables [`build`] rewrites, and every file of every mod
  /// in order. Files count by size and modification time, as build tools do.
-@@ -1294,8 +1335,9 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
+@@ -1294,8 +1355,9 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
      let meta = |path: &Path| -> Result<String> {
          let m = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
          let modified = m
@@ -7646,7 +7786,7 @@ index cb96fea..70f57ec 100644
              .unwrap_or_default();
          Ok(format!(
              "{} {} {}",
-@@ -1305,7 +1347,10 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
+@@ -1305,7 +1367,10 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
          ))
      };
      let mut parts = vec!["horizon mod content 1".to_owned()];
@@ -8306,10 +8446,26 @@ index 0000000..2f0dcd1
 +/// The edition banner under the launcher title.
 +pub const EDITION: &str = "Java Edition 26.3";
 diff --git a/crates/horizon-mods/src/content.rs b/crates/horizon-mods/src/content.rs
-index 494e734..3deace1 100644
+index 494e734..64c0d56 100644
 --- a/crates/horizon-mods/src/content.rs
 +++ b/crates/horizon-mods/src/content.rs
-@@ -312,9 +312,10 @@ impl Content {
+@@ -76,7 +76,6 @@ pub struct BlockProperties {
+ }
+ 
+ #[derive(Debug, Deserialize)]
+-#[serde(deny_unknown_fields)]
+ struct BlockFile {
+     template: String,
+     #[serde(default)]
+@@ -111,7 +110,6 @@ pub enum Rarity {
+ }
+ 
+ #[derive(Debug, Deserialize)]
+-#[serde(deny_unknown_fields)]
+ struct ItemFile {
+     template: String,
+     max_stack_size: Option<u8>,
+@@ -312,9 +310,10 @@ impl Content {
              } else if let Some(item) = parse("item") {
                  items.push((item, name.clone()));
              } else {
