@@ -79,7 +79,16 @@ Build run `44813489808` (cached: 30 minutes total):
 
 v6 adds the branded loading screen, the launcher interface-size setting (100–175%, 150% default), controller/analog navigation with focus outlines on launcher buttons and mod rows, mod-install logging, and the Switch caps of 16 chunks render distance / 128 chunks LOD that prevent the NVK section-arena OOM seen at 64 chunks. The workflow caches NVK, Docker layers and the Cargo target; the next builds should stay near half an hour.
 
-## v10 artifacts (current NRO)
+## v11 artifacts (current NRO)
+
+Build run `44863008020` (NACP title **Horizon**, author **Horizon**, version **0.2.2**):
+
+- `/switch/Horizon.nro` — 54,657,868 bytes, SHA-256 `d4dabc080d9ebd8dd7070b5508b616536fe1710e0ebd9287bb70f9404702d7f9`.
+- `horizon.elf` — 64,899,880 bytes.
+
+v11 fixes the Mods list: four 72 px rows on the 286 + 80 grid, description on its own line, install/toggle buttons centered per row. The Home and Account layouts are the v10/v11 1280x720 design.
+
+## v10 artifacts (previous NRO)
 
 Build run `44855100875` (one combined v10; NACP title **Horizon**, author **Horizon**, version **0.2.1**):
 
