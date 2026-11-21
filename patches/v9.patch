@@ -2706,7 +2706,7 @@ index 1903cab..37b2b65 100644
      /// The glyph for a character in the default font (FontSet.getGlyph).
      pub fn glyph(&self, c: char) -> Glyph {
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 0937cdc..289fcd3 100644
+index 0937cdc..a283b6f 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -1244,6 +1244,13 @@ struct Game<'a> {
@@ -2894,6 +2894,15 @@ index 0937cdc..289fcd3 100644
          if self.pending_entry.is_some() {
              if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
                  let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+@@ -11109,7 +11214,7 @@ impl ApplicationHandler for Game<'_> {
+         let size = self.options.window_size.map(f64::from);
+         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
+         let attributes = Window::default_attributes()
+-            .with_title("Horizon")
++            .with_title(horizon_client::version::NAME)
+             .with_window_icon(horizon_client::window::icon());
+         // Wayland names the window by its app id, which the horizon.desktop entry matches.
+         #[cfg(target_os = "linux")]
 @@ -11159,6 +11264,7 @@ impl ApplicationHandler for Game<'_> {
          }
          if let WindowEvent::Focused(false) = &event {
@@ -3246,6 +3255,15 @@ index 0937cdc..289fcd3 100644
  impl Loading {
      fn resumed(&mut self, event_loop: &ActiveEventLoop) {
          if self.window.is_some() {
+@@ -13389,7 +13654,7 @@ impl Loading {
+             .map(f64::from);
+         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
+         let attributes = Window::default_attributes()
+-            .with_title("Horizon")
++            .with_title(horizon_client::version::NAME)
+             .with_window_icon(horizon_client::window::icon());
+         // Wayland names the window by its app id, which the horizon.desktop entry matches.
+         #[cfg(target_os = "linux")]
 @@ -13473,12 +13738,17 @@ impl Loading {
              building.elapsed().as_millis()
          );
@@ -4537,10 +4555,10 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..b2c9cf4
+index 0000000..bd30efa
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
-@@ -0,0 +1,2962 @@
+@@ -0,0 +1,2971 @@
 +//! The Switch launcher: a separate, dark screen shown before the Minecraft
 +//! title. Pressing Play changes `Title::Mode::Launcher` to the original
 +//! `Title::Mode::Main`; the game's own title is untouched.
@@ -6370,7 +6388,10 @@ index 0000000..b2c9cf4
 +        batch,
 +        atlas,
 +        F_SMALL,
-+        "NINTENDO SWITCH",
++        &format!(
++            "NINTENDO SWITCH · {}",
++            horizon_client::version::VERSION
++        ),
 +        x + 2.0,
 +        h * 0.14 + 46.0,
 +        MUTED,
@@ -6420,6 +6441,12 @@ index 0000000..b2c9cf4
 +        batch.fill(atlas, sidebar_w(w) - 1.0, 0.0, 1.0, h, BORDER);
 +        draw_text(batch, atlas, F_LABEL, tr("brand"), 18.0, 34.0, ACCENT);
 +        draw_text(batch, atlas, F_SMALL, tr("brand_sub"), 18.0, 54.0, MUTED);
++        let version = format!(
++            "{} · {}",
++            horizon_client::version::VERSION,
++            horizon_client::version::GAME
++        );
++        draw_text(batch, atlas, F_SMALL, &version, 18.0, h - 56.0, MUTED);
 +        let _ = pill(
 +            batch,
 +            atlas,
@@ -6520,7 +6547,7 @@ index 0000000..b2c9cf4
 +            batch,
 +            atlas,
 +            F_TITLE,
-+            tr("home_edition"),
++            horizon_client::version::EDITION,
 +            x + 18.0,
 +            172.0,
 +            MUTED,
@@ -7504,7 +7531,7 @@ index 0000000..b2c9cf4
 +    }
 +}
 diff --git a/crates/horizon-client/src/lib.rs b/crates/horizon-client/src/lib.rs
-index 6de9b7c..42197d7 100644
+index 6de9b7c..428db02 100644
 --- a/crates/horizon-client/src/lib.rs
 +++ b/crates/horizon-client/src/lib.rs
 @@ -1,6 +1,7 @@
@@ -7531,6 +7558,14 @@ index 6de9b7c..42197d7 100644
  pub mod raid;
  pub mod random_sequences;
  pub mod random_tick_sections;
+@@ -198,6 +201,7 @@ pub mod ui;
+ pub mod ui_theme;
+ pub mod vanillagen;
+ pub mod vault;
++pub mod version;
+ pub mod weather;
+ pub mod widgets;
+ pub mod win_screen;
 diff --git a/crates/horizon-client/src/mod_content.rs b/crates/horizon-client/src/mod_content.rs
 index cb96fea..70f57ec 100644
 --- a/crates/horizon-client/src/mod_content.rs
@@ -8246,6 +8281,30 @@ index a2fa6b8..f4b34fb 100644
          label,
          enabled,
          id,
+diff --git a/crates/horizon-client/src/version.rs b/crates/horizon-client/src/version.rs
+new file mode 100644
+index 0000000..2f0dcd1
+--- /dev/null
++++ b/crates/horizon-client/src/version.rs
+@@ -0,0 +1,18 @@
++//! One place for the launcher's identity. The Switch build reads `VERSION`
++//! from here for the NACP, and every screen that shows a version pulls the
++//! same constant, so a release changes this file only.
++//!
++//! Public naming: the title is `Horizon` with no version suffix; the version
++//! scheme is `0.1.N` for builds 1-8 and `0.2.(N-9)` from build 9 on. `v9` is
++//! therefore `0.2.0`.
++
++/// The application name shown by hbmenu and in the launcher.
++pub const NAME: &str = "Horizon";
++/// The NACP author field.
++pub const AUTHOR: &str = "Horizon";
++/// The release version; keep this the only line a release edits.
++pub const VERSION: &str = "0.2.0";
++/// The Minecraft: Java Edition line this port follows.
++pub const GAME: &str = "26.3";
++/// The edition banner under the launcher title.
++pub const EDITION: &str = "Java Edition 26.3";
 diff --git a/crates/horizon-mods/src/content.rs b/crates/horizon-mods/src/content.rs
 index 494e734..3deace1 100644
 --- a/crates/horizon-mods/src/content.rs
