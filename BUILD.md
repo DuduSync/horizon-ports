@@ -88,8 +88,16 @@ Build run `44828657611` (cached):
 
 v7 adds the branded loading screen while the integrated server opens a world (no more blocked render thread), the `creative_tab`/unknown-content tolerance for `.hmod` files, a copy-based content overlay for the Switch SD (no symlinks), LOD steps 0/32/64/96/128 on the Switch, controller input resetting the AFK timer, short distance labels, and the built-in public Microsoft client ID (`cc5f2f0a…`). The SD `msa-client-id.txt` is no longer needed. Launcher-first boot, the decoded-resource cache, the shared pad in the launcher/title and the fixed performance preset are the next version (v8).
 
+## Versioning
+
+- The NACP title is **Horizon** with no version suffix; the author field is **Horizon**.
+- The version lives in one place: `crates/horizon-client/src/version.rs` (`NAME`, `AUTHOR`, `VERSION`, `GAME`, `EDITION`). The launcher sidebar draws `VERSION · GAME`; the build workflow extracts the same constants for `nacptool`.
+- Scheme: build `v8` is `0.1.8`; build `v9` is `0.2.0`; build `v10` is `0.2.1`, and so on. Builds 1-8 use `0.1.N`.
+- `/switch/Horizon.nro` stays the only installed NRO; the build artifact can carry a private suffix.
+
 ## Status
 
 - Audio and full builds pass in CI.
-- Account UI is integrated but needs a real Azure client ID and a console test.
-- Mods are not enabled: `wasmtime` does not compile for `target_os = "horizon"` yet.
+- Content mods and the Microsoft device-code flow are in v8; code mods (`wasmtime`) are still out of scope.
+- v9 is the launcher-first design pass: shared version constant, preview renderer, rounded surfaces and the new Home hero.
+- The install folder is `/switch/horizon/`; captures from the launcher go to `/switch/horizon/captures/`.
