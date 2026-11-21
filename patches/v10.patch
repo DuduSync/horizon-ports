@@ -4769,10 +4769,10 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..29ff92f
+index 0000000..052c40f
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
-@@ -0,0 +1,3368 @@
+@@ -0,0 +1,3377 @@
 +//! The Switch launcher: a separate, dark screen shown before the Minecraft
 +//! title. Pressing Play changes `Title::Mode::Launcher` to the original
 +//! `Title::Mode::Main`; the game's own title is untouched.
@@ -6725,30 +6725,33 @@ index 0000000..29ff92f
 +            crate::version::VERSION,
 +            crate::version::GAME
 +        );
++        let card_y = h - 112.0;
 +        panel(
 +            batch,
 +            atlas,
-+            [16.0, h - 100.0, sidebar_w(w) - 32.0, 48.0],
++            [16.0, card_y, sidebar_w(w) - 32.0, 56.0],
 +            SURFACE,
 +            BORDER,
 +        );
-+        batch.fill(atlas, 28.0, h - 84.0, 6.0, 6.0, OK);
-+        draw_text(
++        batch.fill(atlas, 28.0, card_y + 24.0, 6.0, 6.0, OK);
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
 +            tr("home_switch_status"),
 +            40.0,
-+            h - 94.0,
++            card_y + 8.0,
 +            TEXT,
 +        );
-+        draw_text_top(batch, atlas, F_SMALL, &version, 28.0, h - 74.0, MUTED);
++        draw_text_top(batch, atlas, F_SMALL, &version, 28.0, card_y + 32.0, MUTED);
++        let ready = tr("home_ready_short");
++        let ready_w = text_width(atlas, F_SMALL, ready) + 18.0;
 +        let _ = pill(
 +            batch,
 +            atlas,
-+            w - 122.0,
-+            26.0,
-+            tr("home_ready_short"),
++            w - 28.0 - ready_w,
++            28.0,
++            ready,
 +            OK,
 +            rgba(127, 211, 160, 28),
 +        );
@@ -7836,7 +7839,13 @@ index 0000000..29ff92f
 +            b.label.clone()
 +        };
 +        let tw = text_width(atlas, font, &label);
-+        let ty = b.y + (b.h - font_size(font)) / 2.0 + ascent(font);
++        let nudge = match font {
++            F_PLAY => 15.0,
++            F_LABEL => 4.0,
++            F_SMALL => 3.0,
++            _ => 0.0,
++        };
++        let ty = b.y + (b.h - font_size(font)) / 2.0 + nudge;
 +        let lx = if (1..=4).contains(&b.id) {
 +            b.x + 42.0
 +        } else {
