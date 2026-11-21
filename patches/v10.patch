@@ -109,10 +109,10 @@ index a75b0a6..ae284b7 100644
  wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 diff --git a/crates/horizon-client/examples/launcher_preview.rs b/crates/horizon-client/examples/launcher_preview.rs
 new file mode 100644
-index 0000000..207c25d
+index 0000000..4439317
 --- /dev/null
 +++ b/crates/horizon-client/examples/launcher_preview.rs
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,204 @@
 +//! Render the real launcher to PNG, without a window or GPU.
 +//!
 +//! This is the preview the Switch will draw: it builds the same `HudBatch`
@@ -151,6 +151,9 @@ index 0000000..207c25d
 +
 +    horizon_client::lang::set(horizon_client::lang::Language::load(&[&resources], "pt_br"));
 +    let atlas = HudAtlas::fonts(&resources).expect("font atlas");
++    // The game keeps one uploaded atlas for the process; keep the glyphs
++    // already uploaded between screens instead of resetting them per tab.
++    let mut atlas_pixels = vec![0u8; (atlas.width * atlas.height * 4) as usize];
 +    let mut launcher = Launcher::new(&saves, &resources);
 +    launcher.language = "pt_br".into();
 +    launcher.installed.push(Installed {
@@ -173,12 +176,12 @@ index 0000000..207c25d
 +
 +    let mut home = launcher;
 +    home.tab = Tab::Home;
-+    draw(&atlas, &home, out, "home");
++    draw(&atlas, &mut atlas_pixels, &home, out, "home");
 +
 +    let mut mods = Launcher::new(&saves, &resources);
 +    mods.language = "pt_br".into();
 +    mods.tab = Tab::Mods;
-+    draw(&atlas, &mods, out, "mods");
++    draw(&atlas, &mut atlas_pixels, &mods, out, "mods");
 +
 +    let mut account = Launcher::new(&saves, &resources);
 +    account.language = "pt_br".into();
@@ -187,15 +190,21 @@ index 0000000..207c25d
 +    account.account.user_code = "THGZSD8Y".into();
 +    account.account.verification_uri = "https://www.microsoft.com/link".into();
 +    account.account.qr = Qr::encode(&account.account.verification_uri);
-+    draw(&atlas, &account, out, "account");
++    draw(&atlas, &mut atlas_pixels, &account, out, "account");
 +
 +    let mut settings = Launcher::new(&saves, &resources);
 +    settings.language = "pt_br".into();
 +    settings.tab = Tab::Settings;
-+    draw(&atlas, &settings, out, "settings");
++    draw(&atlas, &mut atlas_pixels, &settings, out, "settings");
 +}
 +
-+fn draw(atlas: &HudAtlas, launcher: &Launcher, out: &Path, name: &str) {
++fn draw(
++    atlas: &HudAtlas,
++    atlas_pixels: &mut [u8],
++    launcher: &Launcher,
++    out: &Path,
++    name: &str,
++) {
 +    let mut batch = HudBatch::launcher([OUT_W, OUT_H], 1.0);
 +    launcher.draw(
 +        atlas,
@@ -205,20 +214,20 @@ index 0000000..207c25d
 +    );
 +
 +    // The real atlas starts with no uploaded pixels; the font patches are
-+    // exactly what the renderer would upload before presenting.
-+    let mut pixels = vec![0u8; (atlas.width * atlas.height * 4) as usize];
++    // exactly what the renderer would upload before presenting. Glyphs stay
++    // in the atlas between screens, as they do in the game.
 +    for patch in &batch.patches {
 +        for row in 0..patch.height as usize {
 +            let src = row * patch.width as usize * 4;
 +            let dst = ((patch.y as usize + row) * atlas.width as usize + patch.x as usize) * 4;
 +            let len = patch.width as usize * 4;
-+            if dst + len <= pixels.len() && src + len <= patch.rgba.len() {
-+                pixels[dst..dst + len].copy_from_slice(&patch.rgba[src..src + len]);
++            if dst + len <= atlas_pixels.len() && src + len <= patch.rgba.len() {
++                atlas_pixels[dst..dst + len].copy_from_slice(&patch.rgba[src..src + len]);
 +            }
 +        }
 +    }
 +
-+    let image = rasterize(&batch, &pixels, atlas.width, atlas.height);
++    let image = rasterize(&batch, atlas_pixels, atlas.width, atlas.height);
 +    let path = out.join(format!("{name}.png"));
 +    let file = fs::File::create(&path).unwrap();
 +    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), OUT_W, OUT_H);
