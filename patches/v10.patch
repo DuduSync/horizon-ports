@@ -109,10 +109,10 @@ index a75b0a6..ae284b7 100644
  wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 diff --git a/crates/horizon-client/examples/launcher_preview.rs b/crates/horizon-client/examples/launcher_preview.rs
 new file mode 100644
-index 0000000..a0d4046
+index 0000000..207c25d
 --- /dev/null
 +++ b/crates/horizon-client/examples/launcher_preview.rs
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,195 @@
 +//! Render the real launcher to PNG, without a window or GPU.
 +//!
 +//! This is the preview the Switch will draw: it builds the same `HudBatch`
@@ -149,6 +149,7 @@ index 0000000..a0d4046
 +    fs::create_dir_all(&resources).unwrap();
 +    fs::create_dir_all(out).unwrap();
 +
++    horizon_client::lang::set(horizon_client::lang::Language::load(&[&resources], "pt_br"));
 +    let atlas = HudAtlas::fonts(&resources).expect("font atlas");
 +    let mut launcher = Launcher::new(&saves, &resources);
 +    launcher.language = "pt_br".into();
@@ -4759,10 +4760,10 @@ index 2b6acda..631a6ed 100644
          for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
 diff --git a/crates/horizon-client/src/launcher_v2.rs b/crates/horizon-client/src/launcher_v2.rs
 new file mode 100644
-index 0000000..096d783
+index 0000000..676f6d0
 --- /dev/null
 +++ b/crates/horizon-client/src/launcher_v2.rs
-@@ -0,0 +1,3322 @@
+@@ -0,0 +1,3365 @@
 +//! The Switch launcher: a separate, dark screen shown before the Minecraft
 +//! title. Pressing Play changes `Title::Mode::Launcher` to the original
 +//! `Title::Mode::Main`; the game's own title is untouched.
@@ -6708,8 +6709,8 @@ index 0000000..096d783
 +        );
 +        batch.fill(atlas, 0.0, 0.0, sidebar_w(w), h, SIDEBAR);
 +        batch.fill(atlas, sidebar_w(w) - 1.0, 0.0, 1.0, h, BORDER);
-+        draw_text(batch, atlas, F_LABEL, tr("brand"), 18.0, 34.0, ACCENT);
-+        draw_text(batch, atlas, F_SMALL, tr("brand_sub"), 18.0, 58.0, MUTED);
++        draw_text_top(batch, atlas, F_LABEL, tr("brand"), 18.0, 28.0, ACCENT);
++        draw_text_top(batch, atlas, F_SMALL, tr("brand_sub"), 18.0, 54.0, MUTED);
 +        let version = format!(
 +            "{} · {}",
 +            crate::version::VERSION,
@@ -6729,10 +6730,10 @@ index 0000000..096d783
 +            F_SMALL,
 +            tr("home_switch_status"),
 +            40.0,
-+            h - 89.0,
++            h - 94.0,
 +            TEXT,
 +        );
-+        draw_text(batch, atlas, F_SMALL, &version, 28.0, h - 68.0, MUTED);
++        draw_text_top(batch, atlas, F_SMALL, &version, 28.0, h - 74.0, MUTED);
 +        let _ = pill(
 +            batch,
 +            atlas,
@@ -6752,9 +6753,9 @@ index 0000000..096d783
 +        fill_rounded(batch, atlas, [ax, ay, aw, ah], 10.0, SURFACE_2);
 +        batch.fill(atlas, ax, ay + 8.0, 3.0, ah - 16.0, ACCENT);
 +        let x0 = sidebar_w(w) + 28.0;
-+        draw_text(batch, atlas, F_SMALL, tr("breadcrumb_library"), x0, 34.0, MUTED);
-+        draw_text(batch, atlas, F_SMALL, " / ", x0 + 78.0, 34.0, BORDER);
-+        draw_text(
++        draw_text_top(batch, atlas, F_SMALL, tr("breadcrumb_library"), x0, 26.0, MUTED);
++        draw_text_top(batch, atlas, F_SMALL, " / ", x0 + 78.0, 26.0, BORDER);
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -6765,7 +6766,7 @@ index 0000000..096d783
 +                Tab::Settings => tr("settings_title"),
 +            },
 +            x0 + 98.0,
-+            34.0,
++            26.0,
 +            TEXT,
 +        );
 +        if self.tab != Tab::Home {
@@ -6781,8 +6782,8 @@ index 0000000..096d783
 +                Tab::Account => tr("account_sub"),
 +                Tab::Settings => tr("settings_sub"),
 +            };
-+            draw_text(batch, atlas, F_TITLE, title, x0, 72.0, TEXT);
-+            draw_text(
++            draw_text_top(batch, atlas, F_TITLE, title, x0, 72.0, TEXT);
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_SMALL,
@@ -6852,7 +6853,7 @@ index 0000000..096d783
 +            hero_h - 60.0,
 +            rgba(240, 190, 99, (pulse * 255.0) as u8),
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -6861,7 +6862,7 @@ index 0000000..096d783
 +            hero_y + 30.0,
 +            ACCENT,
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_BIG,
@@ -6870,7 +6871,7 @@ index 0000000..096d783
 +            hero_y + 54.0,
 +            TEXT,
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_TITLE,
@@ -6930,7 +6931,7 @@ index 0000000..096d783
 +            MUTED,
 +            rgba(26, 35, 48, 210),
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -6943,7 +6944,7 @@ index 0000000..096d783
 +        let cards_y = 306.0;
 +        let card_w = ((cw - 16.0) / 2.0).max(180.0);
 +        panel(batch, atlas, [x, cards_y, card_w, 104.0], SURFACE, BORDER);
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -6952,7 +6953,7 @@ index 0000000..096d783
 +            cards_y + 16.0,
 +            MUTED,
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_CARD,
@@ -6961,7 +6962,7 @@ index 0000000..096d783
 +            cards_y + 34.0,
 +            TEXT,
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -6976,7 +6977,7 @@ index 0000000..096d783
 +        );
 +        let x2 = x + card_w + 16.0;
 +        panel(batch, atlas, [x2, cards_y, card_w, 104.0], SURFACE, BORDER);
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -6990,7 +6991,7 @@ index 0000000..096d783
 +        } else {
 +            format!("{mods} mod{}", if mods == 1 { "" } else { "s" })
 +        };
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_CARD,
@@ -6999,7 +7000,7 @@ index 0000000..096d783
 +            cards_y + 34.0,
 +            TEXT,
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -7010,8 +7011,8 @@ index 0000000..096d783
 +        );
 +
 +        // Continue: the most recent save, as a card with a tiny block icon.
-+        draw_text(batch, atlas, F_TITLE, tr("home_continue"), x, 438.0, TEXT);
-+        draw_text(
++        draw_text_top(batch, atlas, F_TITLE, tr("home_continue"), x, 438.0, TEXT);
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
@@ -7055,7 +7056,7 @@ index 0000000..096d783
 +            rgba(105, 78, 52, 255),
 +        );
 +        if let Some(world) = &self.recent {
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_CARD,
@@ -7069,7 +7070,7 @@ index 0000000..096d783
 +            } else {
 +                tr("home_world_survival")
 +            };
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_SMALL,
@@ -7079,7 +7080,7 @@ index 0000000..096d783
 +                MUTED,
 +            );
 +        } else {
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_CARD,
@@ -7088,7 +7089,7 @@ index 0000000..096d783
 +                world_y + 22.0,
 +                TEXT,
 +            );
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_SMALL,
@@ -7109,8 +7110,8 @@ index 0000000..096d783
 +        let mut hx = x;
 +        for (key, label) in hints {
 +            fill_rounded(batch, atlas, [hx, 632.0, 24.0, 24.0], 12.0, SURFACE_2);
-+            draw_text(batch, atlas, F_SMALL, key, hx + 8.0, 635.0, ACCENT);
-+            draw_text(batch, atlas, F_SMALL, label, hx + 32.0, 635.0, MUTED);
++            draw_text_top(batch, atlas, F_SMALL, key, hx + 8.0, 635.0, ACCENT);
++            draw_text_top(batch, atlas, F_SMALL, label, hx + 32.0, 635.0, MUTED);
 +            hx += 36.0 + text_width(atlas, F_SMALL, label) + 24.0;
 +        }
 +    }
@@ -7137,14 +7138,14 @@ index 0000000..096d783
 +            tr("mods_warning")
 +        };
 +        for (i, line) in wrap(atlas, F_SMALL, warning, cw).iter().take(2).enumerate() {
-+            draw_text(batch, atlas, F_SMALL, line, x, y + i as f32 * 10.0, WARN);
++            draw_text_top(batch, atlas, F_SMALL, line, x, y + i as f32 * 10.0, WARN);
 +        }
 +        if self.mods_tab == ModsTab::Browse {
 +            self.draw_search_field(atlas, batch, w);
 +            let per = self.page_size(h);
 +            let projects = self.filtered_projects();
 +            if self.index.is_none() {
-+                draw_text(batch, atlas, F_BODY, &self.index_status, x, 252.0, MUTED);
++                draw_text_top(batch, atlas, F_BODY, &self.index_status, x, 252.0, MUTED);
 +            } else {
 +                for (i, project) in projects.iter().skip(self.page * per).take(per).enumerate() {
 +                    let row = mods_row_rect(x, cw, 156.0 + i as f32 * 36.0);
@@ -7164,7 +7165,7 @@ index 0000000..096d783
 +                        project.name,
 +                        version.map_or_else(|| "-".into(), |v| v.version.clone())
 +                    );
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_LABEL,
@@ -7179,7 +7180,7 @@ index 0000000..096d783
 +                        project.summary,
 +                        format_size(version.map_or(0, |v| v.file.size))
 +                    );
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7190,10 +7191,10 @@ index 0000000..096d783
 +                    );
 +                }
 +                if projects.is_empty() {
-+                    draw_text(batch, atlas, F_BODY, tr("mods_no_items"), x, 162.0, MUTED);
++                    draw_text_top(batch, atlas, F_BODY, tr("mods_no_items"), x, 162.0, MUTED);
 +                }
 +            }
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_SMALL,
@@ -7205,7 +7206,7 @@ index 0000000..096d783
 +        } else {
 +            let per = self.page_size(h);
 +            if self.installed.is_empty() {
-+                draw_text(batch, atlas, F_BODY, tr("mods_no_items"), x, 162.0, MUTED);
++                draw_text_top(batch, atlas, F_BODY, tr("mods_no_items"), x, 162.0, MUTED);
 +            }
 +            for (i, item) in self
 +                .installed
@@ -7224,7 +7225,7 @@ index 0000000..096d783
 +                    if hovered { SURFACE_2 } else { SURFACE },
 +                    if hovered { ACCENT } else { BORDER },
 +                );
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_LABEL,
@@ -7243,7 +7244,7 @@ index 0000000..096d783
 +                        format!("v{}", item.version)
 +                    }
 +                );
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_SMALL,
@@ -7272,7 +7273,7 @@ index 0000000..096d783
 +            );
 +        }
 +        if let Some(status) = &self.install_status {
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_SMALL,
@@ -7300,7 +7301,7 @@ index 0000000..096d783
 +            self.query.clone()
 +        };
 +        let color = if self.query.is_empty() { MUTED } else { TEXT };
-+        draw_text(batch, atlas, F_BODY, &shown, r[0] + 8.0, r[1] + 6.0, color);
++        draw_text_top(batch, atlas, F_BODY, &shown, r[0] + 8.0, r[1] + 6.0, color);
 +        if self.search_focused {
 +            let width = text_width(atlas, F_BODY, &self.query);
 +            let on = (self.started.elapsed().as_millis() / 500).is_multiple_of(2);
@@ -7318,12 +7319,12 @@ index 0000000..096d783
 +        let ly = left[1] + 12.0;
 +        let rx = right[0] + 14.0;
 +        let ry = right[1] + 12.0;
-+        draw_text(batch, atlas, F_SMALL, tr("account_label"), lx, ly, MUTED);
++        draw_text_top(batch, atlas, F_SMALL, tr("account_label"), lx, ly, MUTED);
 +
 +        match self.account.phase {
 +            Phase::SignedIn => {
-+                draw_text(batch, atlas, F_SMALL, tr("account_signed_in"), lx, ly + 20.0, OK);
-+                draw_text(
++                draw_text_top(batch, atlas, F_SMALL, tr("account_signed_in"), lx, ly + 20.0, OK);
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_TITLE,
@@ -7332,7 +7333,7 @@ index 0000000..096d783
 +                    ly + 38.0,
 +                    TEXT,
 +                );
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_MONO,
@@ -7347,7 +7348,7 @@ index 0000000..096d783
 +                        .take(3)
 +                        .enumerate()
 +                    {
-+                        draw_text(
++                        draw_text_top(
 +                            batch,
 +                            atlas,
 +                            F_SMALL,
@@ -7358,7 +7359,7 @@ index 0000000..096d783
 +                        );
 +                    }
 +                }
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_SMALL,
@@ -7367,11 +7368,11 @@ index 0000000..096d783
 +                    left[1] + left[3] - 22.0,
 +                    MUTED,
 +                );
-+                draw_text(batch, atlas, F_SMALL, tr("account_why"), rx, ry + 20.0, MUTED);
-+                draw_text(batch, atlas, F_SMALL, tr("account_enter_hint"), rx, ry + 44.0, MUTED);
++                draw_text_top(batch, atlas, F_SMALL, tr("account_why"), rx, ry + 20.0, MUTED);
++                draw_text_top(batch, atlas, F_SMALL, tr("account_enter_hint"), rx, ry + 44.0, MUTED);
 +            }
 +            Phase::Starting | Phase::Waiting | Phase::Completing => {
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_TITLE,
@@ -7385,7 +7386,7 @@ index 0000000..096d783
 +                    .take(3)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7405,7 +7406,7 @@ index 0000000..096d783
 +                    .take(2)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7415,7 +7416,7 @@ index 0000000..096d783
 +                        WARN,
 +                    );
 +                }
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_SMALL,
@@ -7433,23 +7434,23 @@ index 0000000..096d783
 +                    .map_or(side, |qr| qr_extent(side, qr));
 +                let qx = rx;
 +                let qy = ry + 18.0;
-+                draw_text(batch, atlas, F_SMALL, tr("account_sign_in"), rx, ry, ACCENT);
++                draw_text_top(batch, atlas, F_SMALL, tr("account_sign_in"), rx, ry, ACCENT);
 +                if let Some(qr) = &self.account.qr {
 +                    draw_qr(batch, atlas, qx, qy, side, qr);
 +                }
 +                let tx = qx + actual + 16.0;
 +                let tw = (right[0] + right[2] - tx - 12.0).max(100.0);
-+                draw_text(batch, atlas, F_SMALL, tr("account_code_label"), tx, qy, MUTED);
++                draw_text_top(batch, atlas, F_SMALL, tr("account_code_label"), tx, qy, MUTED);
 +                let code = pretty_code(&self.account.user_code);
-+                draw_text(batch, atlas, F_TITLE, &code, tx, qy + 16.0, ACCENT);
++                draw_text_top(batch, atlas, F_TITLE, &code, tx, qy + 16.0, ACCENT);
 +                let uri = truncate(atlas, F_SMALL, &self.account.verification_uri, tw);
-+                draw_text(batch, atlas, F_SMALL, &uri, tx, qy + 58.0, TEXT);
++                draw_text_top(batch, atlas, F_SMALL, &uri, tx, qy + 58.0, TEXT);
 +                for (i, line) in wrap(atlas, F_SMALL, tr("account_qr_hint"), tw)
 +                    .iter()
 +                    .take(3)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7469,7 +7470,7 @@ index 0000000..096d783
 +                    .take(2)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7481,7 +7482,7 @@ index 0000000..096d783
 +                }
 +            }
 +            Phase::SignedOut => {
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_TITLE,
@@ -7495,7 +7496,7 @@ index 0000000..096d783
 +                    .take(3)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7505,15 +7506,15 @@ index 0000000..096d783
 +                        MUTED,
 +                    );
 +                }
-+                draw_text(batch, atlas, F_SMALL, tr("account_why"), lx, ly + 102.0, MUTED);
-+                draw_text(batch, atlas, F_TITLE, "Microsoft", rx, ry + 18.0, TEXT);
-+                draw_text(batch, atlas, F_SMALL, tr("account_why"), rx, ry + 58.0, MUTED);
++                draw_text_top(batch, atlas, F_SMALL, tr("account_why"), lx, ly + 102.0, MUTED);
++                draw_text_top(batch, atlas, F_TITLE, "Microsoft", rx, ry + 18.0, TEXT);
++                draw_text_top(batch, atlas, F_SMALL, tr("account_why"), rx, ry + 58.0, MUTED);
 +                for (i, line) in wrap(atlas, F_SMALL, tr("account_enter_hint"), right[2] - 28.0)
 +                    .iter()
 +                    .take(2)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7536,7 +7537,7 @@ index 0000000..096d783
 +                    .take(6)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7546,13 +7547,13 @@ index 0000000..096d783
 +                        color,
 +                    );
 +                }
-+                draw_text(batch, atlas, F_TITLE, "Microsoft", rx, ry + 18.0, TEXT);
++                draw_text_top(batch, atlas, F_TITLE, "Microsoft", rx, ry + 18.0, TEXT);
 +                for (i, line) in wrap(atlas, F_SMALL, tr("account_enter_hint"), right[2] - 28.0)
 +                    .iter()
 +                    .take(2)
 +                    .enumerate()
 +                {
-+                    draw_text(
++                    draw_text_top(
 +                        batch,
 +                        atlas,
 +                        F_SMALL,
@@ -7573,7 +7574,7 @@ index 0000000..096d783
 +                .take(2)
 +                .enumerate()
 +            {
-+                draw_text(
++                draw_text_top(
 +                    batch,
 +                    atlas,
 +                    F_SMALL,
@@ -7589,13 +7590,13 @@ index 0000000..096d783
 +    fn draw_pin_field(&self, atlas: &HudAtlas, batch: &mut HudBatch, w: f32, h: f32) {
 +        let r = pin_rect(w, h);
 +        crate::widgets::target_as(r, crate::widgets::Kind::Field);
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_SMALL,
 +            tr("account_pin"),
 +            r[0],
-+            r[1] - 14.0,
++            r[1] - 20.0,
 +            MUTED,
 +        );
 +        batch.fill(atlas, r[0], r[1], r[2], r[3], SURFACE_2);
@@ -7623,7 +7624,7 @@ index 0000000..096d783
 +        } else {
 +            TEXT
 +        };
-+        draw_text(batch, atlas, F_BODY, &shown, r[0] + 8.0, r[1] + 7.0, color);
++        draw_text_top(batch, atlas, F_BODY, &shown, r[0] + 8.0, r[1] + 5.0, color);
 +        if self.account.pin_focused {
 +            let on = (self.started.elapsed().as_millis() / 500).is_multiple_of(2);
 +            if on {
@@ -7645,7 +7646,7 @@ index 0000000..096d783
 +        ];
 +        for (i, label) in labels.iter().enumerate() {
 +            let y = 160.0 + i as f32 * 64.0;
-+            draw_text(batch, atlas, F_BODY, label, x, y + 7.0, MUTED);
++            draw_text_top(batch, atlas, F_BODY, label, x, y + 7.0, MUTED);
 +        }
 +        let r = name_field_rect(w);
 +        crate::widgets::target_as(r, crate::widgets::Kind::Field);
@@ -7656,7 +7657,7 @@ index 0000000..096d783
 +            r,
 +            if self.name_focused { ACCENT } else { BORDER },
 +        );
-+        draw_text(
++        draw_text_top(
 +            batch,
 +            atlas,
 +            F_BODY,
@@ -7678,7 +7679,7 @@ index 0000000..096d783
 +            .take(2)
 +            .enumerate()
 +        {
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_SMALL,
@@ -7689,7 +7690,7 @@ index 0000000..096d783
 +            );
 +        }
 +        if let Some((message, error)) = &self.status {
-+            draw_text(
++            draw_text_top(
 +                batch,
 +                atlas,
 +                F_SMALL,
@@ -7826,7 +7827,7 @@ index 0000000..096d783
 +            b.label.clone()
 +        };
 +        let tw = text_width(atlas, font, &label);
-+        let ty = b.y + b.h / 2.0 - if b.id == 10 { 10.0 } else { 6.5 };
++        let ty = b.y + (b.h - font_size(font)) / 2.0 + ascent(font);
 +        let lx = if (1..=4).contains(&b.id) {
 +            b.x + 42.0
 +        } else {
@@ -7968,7 +7969,7 @@ index 0000000..096d783
 +) -> f32 {
 +    let width = text_width(atlas, F_SMALL, label) + 18.0;
 +    fill_rounded(batch, atlas, [x, y, width, 20.0], 7.0, fill);
-+    draw_text(batch, atlas, F_SMALL, label, x + 9.0, y + 5.0, ink);
++    draw_text_top(batch, atlas, F_SMALL, label, x + 9.0, y + 4.0, ink);
 +    width
 +}
 +fn border(batch: &mut HudBatch, atlas: &HudAtlas, r: [f32; 4], color: u32) {
@@ -7977,6 +7978,49 @@ index 0000000..096d783
 +    batch.fill(atlas, r[0], r[1], 1.0, r[3], color);
 +    batch.fill(atlas, r[0] + r[2] - 1.0, r[1], 1.0, r[3], color);
 +}
++/// The ascender of a launcher face, for laying out from the top edge.
++fn font_size(font: &str) -> f32 {
++    match font {
++        F_BIG => 58.0,
++        F_TITLE => 34.0,
++        F_CODE => 34.0,
++        F_CARD => 25.0,
++        F_PLAY => 30.0,
++        F_LABEL => 19.0,
++        F_BODY => 17.0,
++        F_SMALL => 15.0,
++        F_MONO => 13.0,
++        _ => 15.0,
++    }
++}
++
++fn ascent(font: &str) -> f32 {
++    match font {
++        F_BIG => 44.0,
++        F_TITLE => 26.0,
++        F_CODE => 26.0,
++        F_CARD => 19.0,
++        F_PLAY => 23.0,
++        F_LABEL => 14.0,
++        F_BODY => 13.0,
++        F_SMALL => 11.0,
++        F_MONO => 10.0,
++        _ => 11.0,
++    }
++}
++
++fn draw_text_top(
++    batch: &mut HudBatch,
++    atlas: &HudAtlas,
++    font: &str,
++    text: &str,
++    x: f32,
++    y: f32,
++    color: u32,
++) {
++    draw_text(batch, atlas, font, text, x, y + ascent(font), color);
++}
++
 +fn draw_text(
 +    batch: &mut HudBatch,
 +    atlas: &HudAtlas,
